@@ -1,0 +1,47 @@
+problem_id: lza
+design_name: ct_vfmau_lza
+
+description: |
+  108-bit Leading Zero Anticipator (LZA) from the OpenC910 RISC-V CPU's
+  Vector Floating-point Multiply-Accumulate Unit (VFMAU).
+
+  This module predicts the number of leading zeros in the result of an
+  addition/subtraction of two 108-bit carry-save operands (summand + addend),
+  before the actual addition is performed. This is critical for floating-point
+  normalization — by anticipating the leading zero count in parallel with the
+  adder, the normalizing shift can begin immediately.
+
+  Algorithm:
+    1. Pre-encoding: Compute carry propagate (P), generate (G), and delete (D)
+       signals from summand and addend. Derive lza_precod[107:0] which marks
+       the approximate position of the leading one.
+    2. Hierarchical priority encoding of lza_precod[107:0]:
+       - Split into high 64 bits [107:44] and low 44 bits [43:0]
+       - L1: 27x 4:2 LZA compressors (16 for high, 11 for low)
+       - L2: 4x 4:2 (high) + 2x 4:2 + 1x 3:2 (low), plus MUX encoding
+       - L3: 1x 4:2 (high) + 1x 3:2 (low), plus MUX encoding
+       - L4: Final mux selecting high or low result
+    3. Output: 7-bit lza_result encoding the predicted leading zero position
+       (0 = MSB is the leading one, 108 = all zeros).
+
+  The LZA prediction may be off by 1 position (standard LZA property);
+  downstream logic handles the ±1 correction.
+
+  Constraints:
+    - Module interface (ports, widths, directions) must be EXACTLY preserved.
+    - Pure combinational logic — no clock, no pipeline registers.
+    - Functional correctness: for all input combinations of summand[107:0],
+      addend[107:0], and sub_vld, the output lza_result[6:0] must be identical
+      to the reference implementation.
+
+ports:
+  inputs:
+    - {name: addend, width: 108}
+    - {name: sub_vld, width: 1}
+    - {name: summand, width: 108}
+  outputs:
+    - {name: lza_result, width: 7}
+
+deps:
+  - deps/ct_vfmau_lza_42.v
+  - deps/ct_vfmau_lza_32.v

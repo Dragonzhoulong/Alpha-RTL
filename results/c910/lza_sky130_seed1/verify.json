@@ -1,0 +1,24 @@
+{
+  "problem": "lza_simd_half",
+  "liberty": "sky130_fd_sc_hd__tt_025C_1v80.lib",
+  "seed": 1,
+  "model": "Qwen3-8B",
+  "steps": 100,
+  "rollouts_per_step": 32,
+  "reference": {
+    "area_um2": 1552.7392,
+    "delay_ps": 2191.1,
+    "adp": 3402206.86112
+  },
+  "discovered": {
+    "area_um2": 1281.2288,
+    "delay_ps": 1504.6999999999998,
+    "adp": 1927864.9753599998,
+    "found_at_step": 80
+  },
+  "adp_reduction": 0.4333486898191281,
+  "checks": {
+    "simulation": true,
+    "formal_equivalence": true
+  }
+}

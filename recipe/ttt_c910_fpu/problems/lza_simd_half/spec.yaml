@@ -1,0 +1,41 @@
+problem_id: lza_simd_half
+design_name: ct_vfmau_lza_simd_half
+
+description: |
+  24-bit Leading Zero Anticipator (LZA) for SIMD half-precision operations
+  from the OpenC910 RISC-V CPU's Vector Floating-point Multiply-Accumulate
+  Unit (VFMAU).
+
+  This module predicts the number of leading zeros in the result of an
+  addition/subtraction of two 24-bit carry-save operands (summand + addend),
+  before the actual addition is performed. Used for the SIMD half-precision
+  datapath where two FP16 operations execute in parallel.
+
+  Algorithm:
+    1. Pre-encoding: Compute carry propagate (P), generate (G), and delete (D)
+       signals from summand and addend. Derive lza_precod[23:0] which marks
+       the approximate position of the leading one.
+    2. Priority encoding of lza_precod[23:0] to find the MSB '1' position.
+    3. Output: 5-bit lza_result encoding the predicted leading zero position
+       (0 = MSB is the leading one, 24 = all zeros).
+       lza_result_zero = 1 when no leading one is found.
+
+  Constraints:
+    - Module interface (ports, widths, directions) must be EXACTLY preserved.
+    - Pure combinational logic — no clock, no pipeline registers.
+    - Functional correctness: for all input combinations of summand[23:0],
+      addend[23:0], and sub_vld, the outputs lza_result[4:0] and
+      lza_result_zero must be identical to the reference implementation.
+
+ports:
+  inputs:
+    - {name: addend, width: 24}
+    - {name: sub_vld, width: 1}
+    - {name: summand, width: 24}
+  outputs:
+    - {name: lza_result, width: 5}
+    - {name: lza_result_zero, width: 1}
+
+deps:
+  - deps/ct_vfmau_lza_42.v
+  - deps/ct_vfmau_lza_32.v

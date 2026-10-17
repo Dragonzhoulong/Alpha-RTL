@@ -1,0 +1,44 @@
+{
+  "solutions": [
+    {
+      "problem_id": "synchronizer",
+      "verilog_code": "// Seed A — Clean reference-style MUX-based synchronizer.\n// Same architecture as RTLLM's verified implementation but fixes a latent\n// bug there: the en_data_reg register (clocked by clk_a) used `!brstn`\n// instead of `!arstn` for its reset. This version resets it with arstn.\nmodule synchronizer(\n    input            clk_a,\n    input            clk_b,\n    input            arstn,\n    input            brstn,\n    input      [3:0] data_in,\n    input            data_en,\n    output reg [3:0] dataout\n);\n    reg [3:0] data_reg;\n    reg       en_data_reg;\n    reg       en_clap_one;\n    reg       en_clap_two;\n\n    // Source (clk_a) domain\n    always @(posedge clk_a or negedge arstn) begin\n        if (!arstn) data_reg <= 4'd0;\n        else        data_reg <= data_in;\n    end\n\n    always @(posedge clk_a or negedge arstn) begin\n        if (!arstn) en_data_reg <= 1'b0;\n        else        en_data_reg <= data_en;\n    end\n\n    // Destination (clk_b) domain: two-flop synchronizer on the enable.\n    always @(posedge clk_b or negedge brstn) begin\n        if (!brstn) en_clap_one <= 1'b0;\n        else        en_clap_one <= en_data_reg;\n    end\n\n    always @(posedge clk_b or negedge brstn) begin\n        if (!brstn) en_clap_two <= 1'b0;\n        else        en_clap_two <= en_clap_one;\n    end\n\n    // Output mux: capture data_reg when the synchronized enable is high,\n    // otherwise hold the previous value.\n    always @(posedge clk_b or negedge brstn) begin\n        if (!brstn)             dataout <= 4'd0;\n        else if (en_clap_two)   dataout <= data_reg;\n        else                    dataout <= dataout;\n    end\nendmodule\n",
+      "value": 10.192788576909553,
+      "raw_score": 10.192788576909553,
+      "ppa_score": 0.009977262920136962,
+      "ppa_area": 65.968,
+      "ppa_delay": 176.9,
+      "observation": "Verified seed (synchronizer_A_reference_clean): functional PASS, area=66.0um2, delay=176.9ps."
+    },
+    {
+      "problem_id": "synchronizer",
+      "verilog_code": "// Seed B — Compact single-always-per-domain style.\n// Same behaviour as the MUX synchronizer, but each clock domain is handled\n// in exactly one always block; the two-flop sync chain is packed into a\n// 2-bit shift register.\nmodule synchronizer(\n    input            clk_a,\n    input            clk_b,\n    input            arstn,\n    input            brstn,\n    input      [3:0] data_in,\n    input            data_en,\n    output reg [3:0] dataout\n);\n    reg [3:0] data_reg;\n    reg       en_data_reg;\n    reg [1:0] en_sync;   // {en_clap_two, en_clap_one}\n\n    // Source domain: data path and enable capture share one always block.\n    always @(posedge clk_a or negedge arstn) begin\n        if (!arstn) begin\n            data_reg    <= 4'd0;\n            en_data_reg <= 1'b0;\n        end else begin\n            data_reg    <= data_in;\n            en_data_reg <= data_en;\n        end\n    end\n\n    // Destination domain: 2-flop sync of the enable and the output mux.\n    always @(posedge clk_b or negedge brstn) begin\n        if (!brstn) begin\n            en_sync <= 2'b00;\n            dataout <= 4'd0;\n        end else begin\n            en_sync <= {en_sync[0], en_data_reg};\n            if (en_sync[1]) dataout <= data_reg;\n        end\n    end\nendmodule\n",
+      "value": 10.192788576909553,
+      "raw_score": 10.192788576909553,
+      "ppa_score": 0.009977262920136962,
+      "ppa_area": 65.968,
+      "ppa_delay": 176.9,
+      "observation": "Verified seed (synchronizer_B_compact): functional PASS, area=66.0um2, delay=176.9ps."
+    },
+    {
+      "problem_id": "synchronizer",
+      "verilog_code": "// Seed C — Gated-capture variant.\n// Rather than muxing dataout every clk_b cycle, this version only clocks the\n// output register when the synchronized enable is high. Functionally\n// equivalent to the MUX synchronizer because an unclocked register holds its\n// value. Often slightly lower switching activity (hence power).\nmodule synchronizer(\n    input            clk_a,\n    input            clk_b,\n    input            arstn,\n    input            brstn,\n    input      [3:0] data_in,\n    input            data_en,\n    output reg [3:0] dataout\n);\n    reg [3:0] data_reg;\n    reg       en_data_reg;\n    reg       en_clap_one;\n    reg       en_clap_two;\n\n    always @(posedge clk_a or negedge arstn) begin\n        if (!arstn) begin\n            data_reg    <= 4'd0;\n            en_data_reg <= 1'b0;\n        end else begin\n            data_reg    <= data_in;\n            en_data_reg <= data_en;\n        end\n    end\n\n    always @(posedge clk_b or negedge brstn) begin\n        if (!brstn) begin\n            en_clap_one <= 1'b0;\n            en_clap_two <= 1'b0;\n        end else begin\n            en_clap_one <= en_data_reg;\n            en_clap_two <= en_clap_one;\n        end\n    end\n\n    // Separate output register — hold when en_clap_two is low.\n    always @(posedge clk_b or negedge brstn) begin\n        if (!brstn)             dataout <= 4'd0;\n        else if (en_clap_two)   dataout <= data_reg;\n    end\nendmodule\n",
+      "value": 10.192788576909553,
+      "raw_score": 10.192788576909553,
+      "ppa_score": 0.009977262920136962,
+      "ppa_area": 65.968,
+      "ppa_delay": 176.9,
+      "observation": "Verified seed (synchronizer_C_gated_capture): functional PASS, area=66.0um2, delay=176.9ps."
+    },
+    {
+      "problem_id": "synchronizer",
+      "verilog_code": "// Seed D — Parameterised sync-chain variant.\n// Uses a localparam-sized shift register so the synchronizer depth can be\n// tuned; defaults to depth 2 to match the spec. The output stage explicitly\n// muxes between data_reg and the held dataout to mirror the RTLLM wording.\nmodule synchronizer(\n    input            clk_a,\n    input            clk_b,\n    input            arstn,\n    input            brstn,\n    input      [3:0] data_in,\n    input            data_en,\n    output reg [3:0] dataout\n);\n    localparam integer SYNC_DEPTH = 2;\n\n    reg [3:0]            data_reg;\n    reg                  en_data_reg;\n    reg [SYNC_DEPTH-1:0] en_sync;\n\n    always @(posedge clk_a or negedge arstn) begin\n        if (!arstn) data_reg <= 4'd0;\n        else        data_reg <= data_in;\n    end\n\n    always @(posedge clk_a or negedge arstn) begin\n        if (!arstn) en_data_reg <= 1'b0;\n        else        en_data_reg <= data_en;\n    end\n\n    always @(posedge clk_b or negedge brstn) begin\n        if (!brstn) en_sync <= {SYNC_DEPTH{1'b0}};\n        else        en_sync <= {en_sync[SYNC_DEPTH-2:0], en_data_reg};\n    end\n\n    wire en_sync_final = en_sync[SYNC_DEPTH-1];\n\n    always @(posedge clk_b or negedge brstn) begin\n        if (!brstn)              dataout <= 4'd0;\n        else                     dataout <= en_sync_final ? data_reg : dataout;\n    end\nendmodule\n",
+      "value": 10.192788576909553,
+      "raw_score": 10.192788576909553,
+      "ppa_score": 0.009977262920136962,
+      "ppa_area": 65.968,
+      "ppa_delay": 176.9,
+      "observation": "Verified seed (synchronizer_D_generate_chain): functional PASS, area=66.0um2, delay=176.9ps."
+    }
+  ]
+}

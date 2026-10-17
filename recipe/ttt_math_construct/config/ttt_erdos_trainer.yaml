@@ -1,0 +1,96 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+data:
+  train_files: null
+  val_files: null
+  train_batch_size: 16
+  val_batch_size: 16
+  gen_batch_size: ${data.train_batch_size}
+  dataloader_num_workers: 0
+  shuffle: false
+  validation_shuffle: false
+  max_prompt_length: 4096
+  max_response_length: 4096
+  truncation: left
+  ttt_data_source: ttt/erdos_min_overlap
+  custom_cls:
+    path: pkg://recipe.ttt_math_construct.dataset
+    name: TTTErdosDataset
+  sampler:
+    class_path: pkg://recipe.ttt_math_construct.sampler
+    class_name: TTTErdosSampler
+  ttt_erdos:
+    target_c5: 0.3808
+    initial_state_count: ${data.train_batch_size}
+    min_points: 40
+    max_points: 100
+    max_buffer_size: 1000
+    topk_children: 2
+    puct_c: 1.0
+    lineage_blocking: true
+    key_precision: 8
+    seed: 42
+    state_pool_dir: ${trainer.default_local_dir}/ttt_state_pool
+    state_pool_history_every: ${trainer.save_freq}
+
+custom_reward_function:
+  path: recipe/ttt_math_construct/erdos_reward.py
+  name: compute_score
+  reward_kwargs:
+    timeout_s: 8.0
+    budget_s: 4.0
+    seed: 42
+    reward_eps: 1e-8
+    failure_reward: 0.0
+
+reward_model:
+  enable: false
+  launch_reward_fn_async: false
+
+algorithm:
+  adv_estimator: ttt_entropic_adaptive
+  use_kl_in_reward: false
+  custom_adv_estimator_use_critic: false
+  ttt_entropic_kl_budget: 0.6931471805599453
+  ttt_entropic_beta_max: 1000000.0
+  ttt_entropic_beta_iters: 60
+  ttt_entropic_epsilon: 1e-12
+  ttt_remove_constant_reward_groups: true
+  ttt_constant_reward_tol: 1e-12
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    entropy_coeff: 0.0
+    use_dynamic_bsz: true
+    ppo_mini_batch_size: ${data.train_batch_size}
+    ppo_max_token_len_per_gpu: 16384
+    policy_loss:
+      loss_mode: gpg
+  rollout:
+    n: 8
+    temperature: 1.0
+    top_p: 1.0
+    tensor_model_parallel_size: 1
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+
+trainer:
+  project_name: verl-ttt-math-construct
+  experiment_name: erdos-min-overlap
+  logger: ["console"]
+  rollout_data_dir: ${trainer.default_local_dir}/rollout_samples
+  log_val_generations: 0
+  val_before_train: false
+  test_freq: -1
+  save_freq: 20
+  total_epochs: 1
+  total_training_steps: 200
+  critic_warmup: 0
+  nnodes: 1
+  n_gpus_per_node: 8

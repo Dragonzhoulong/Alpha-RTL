@@ -1,0 +1,122 @@
+diff --git a/verl/trainer/main_ppo.py b/verl/trainer/main_ppo.py
+index a9ea5546..5020299a 100644
+--- a/verl/trainer/main_ppo.py
++++ b/verl/trainer/main_ppo.py
+@@ -199,8 +199,10 @@ class TaskRunner:
+             role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
+             mapping[Role.RewardModel] = global_pool_id
+ 
+-        # Add a reference policy worker if KL loss or KL reward is used.
+-        if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
++        # Add a reference policy worker if KL loss, KL reward, or KL-in-advantage is used.
++        if (config.algorithm.use_kl_in_reward
++                or config.actor_rollout_ref.actor.use_kl_loss
++                or config.algorithm.get("use_kl_in_advantage", False)):
+             role_worker_mapping[Role.RefPolicy] = ray.remote(ActorRolloutRefWorker)
+             mapping[Role.RefPolicy] = global_pool_id
+ 
+diff --git a/verl/trainer/ppo/core_algos.py b/verl/trainer/ppo/core_algos.py
+index 5f026758..5e1363c4 100644
+--- a/verl/trainer/ppo/core_algos.py
++++ b/verl/trainer/ppo/core_algos.py
+@@ -20,6 +20,7 @@ implement PPO-like algorithms.
+ 
+ __all__ = ["register_adv_est", "get_adv_estimator_fn", "AdvantageEstimator"]
+ 
++import math
+ from collections import defaultdict
+ from enum import Enum
+ from typing import Optional
+diff --git a/verl/trainer/ppo/ray_trainer.py b/verl/trainer/ppo/ray_trainer.py
+index 45ed80a4..8520e8ee 100644
+--- a/verl/trainer/ppo/ray_trainer.py
++++ b/verl/trainer/ppo/ray_trainer.py
+@@ -283,6 +283,14 @@ def compute_advantage(
+             adv_kwargs["index"] = data.non_tensor_batch["uid"]
+         if "reward_baselines" in data.batch:  # optional
+             adv_kwargs["reward_baselines"] = data.batch["reward_baselines"]
++        if "old_log_probs" in data.batch:  # optional, for KL-in-advantage
++            adv_kwargs["old_log_probs"] = data.batch["old_log_probs"]
++        if "ref_log_prob" in data.batch:  # optional, for KL-in-advantage
++            adv_kwargs["ref_log_prob"] = data.batch["ref_log_prob"]
++        if "global_steps" in data.meta_info:  # optional, for schedule-aware estimators
++            adv_kwargs["global_steps"] = data.meta_info["global_steps"]
++        if "total_training_steps" in data.meta_info:
++            adv_kwargs["total_training_steps"] = data.meta_info["total_training_steps"]
+ 
+         # calculate advantage estimator
+         advantages, returns = adv_estimator_fn(**adv_kwargs)
+@@ -380,10 +388,13 @@ class RayPPOTrainer:
+             AdvantageEstimator.OPO,
+             AdvantageEstimator.REINFORCE_PLUS_PLUS_BASELINE,
+             AdvantageEstimator.GPG,
++            AdvantageEstimator.TTT_ENTROPIC_ADAPTIVE,
+         ]:
+             self.use_critic = False
+         else:
+-            raise NotImplementedError
++            # Allow custom registered estimators without requiring changes here.
++            core_algos.get_adv_estimator_fn(self.config.algorithm.adv_estimator)
++            self.use_critic = bool(self.config.algorithm.get("custom_adv_estimator_use_critic", False))
+ 
+         self._validate_config()
+         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
+@@ -1299,6 +1310,10 @@ class RayPPOTrainer:
+                             "norm_adv_by_std_in_grpo", True
+                         )  # GRPO adv normalization factor
+ 
++                        # Make training-progress info available to schedule-aware adv estimators.
++                        batch.meta_info["global_steps"] = self.global_steps
++                        batch.meta_info["total_training_steps"] = self.total_training_steps
++
+                         batch = compute_advantage(
+                             batch,
+                             adv_estimator=self.config.algorithm.adv_estimator,
+@@ -1309,6 +1324,18 @@ class RayPPOTrainer:
+                             config=self.config.algorithm,
+                         )
+ 
++                        # Drain per-step diagnostics from custom advantage estimators.
++                        # Any estimator function that writes to its ``last_adv_metrics``
++                        # attribute will be picked up here without verl-core coupling.
++                        try:
++                            _adv_fn = core_algos.get_adv_estimator_fn(self.config.algorithm.adv_estimator)
++                            _adv_metrics = getattr(_adv_fn, "last_adv_metrics", None)
++                            if _adv_metrics:
++                                metrics.update(_adv_metrics)
++                                _adv_fn.last_adv_metrics = {}
++                        except Exception:
++                            pass
++
+                     # update critic
+                     if self.use_critic:
+                         with marked_timer("update_critic", timing_raw, color="pink"):
+diff --git a/verl/utils/checkpoint/fsdp_checkpoint_manager.py b/verl/utils/checkpoint/fsdp_checkpoint_manager.py
+index 14e448da..b166096f 100644
+--- a/verl/utils/checkpoint/fsdp_checkpoint_manager.py
++++ b/verl/utils/checkpoint/fsdp_checkpoint_manager.py
+@@ -334,7 +334,23 @@ class FSDPCheckpointManager(BaseCheckpointManager):
+                             f"in, using a generation config created from the model config when saving hf_model."
+                         )
+ 
+-                save_model.save_pretrained(hf_local_path, state_dict=state_dict)
++                # Patch safetensors.save_file to use a bytes-buffer write
++                # instead of mmap+fallocate, which fails on Lustre filesystems.
++                import transformers.modeling_utils as _tmu
++                from safetensors.torch import save as _st_save_bytes
++
++                def _save_file_no_mmap(tensors, filename, metadata=None):
++                    data = _st_save_bytes(tensors, metadata=metadata)
++                    with open(filename, "wb") as _f:
++                        _f.write(data)
++
++                _orig = _tmu.__dict__.get("safe_save_file")
++                _tmu.safe_save_file = _save_file_no_mmap
++                try:
++                    save_model.save_pretrained(hf_local_path, state_dict=state_dict)
++                finally:
++                    if _orig is not None:
++                        _tmu.safe_save_file = _orig
+                 log_with_rank(
+                     f"Saved hf_model to {os.path.abspath(hf_local_path)}",
+                     rank=self.rank,

@@ -1,0 +1,137 @@
+You are an expert digital circuit designer specializing in high-performance arithmetic units.
+
+## Task
+
+Implement a Verilog module `ct_vfmau_lza_simd_half` — a 24-bit Leading Zero Anticipator (LZA) for the SIMD half-precision datapath of the floating-point multiply-accumulate unit (VFMAU) in an out-of-order RISC-V CPU. The module has two stages: (1) pre-encoding and (2) priority encoding.
+
+## Module Interface (MUST match exactly)
+
+```verilog
+module ct_vfmau_lza_simd_half(
+  addend,                           // input  [23:0]
+  lza_result,                       // output [4:0]
+  lza_result_zero,                  // output
+  sub_vld,                          // input
+  summand                           // input  [23:0]
+);
+input   [23:0]  addend;
+input           sub_vld;
+input   [23:0]  summand;
+output  [4 :0]  lza_result;
+output          lza_result_zero;
+```
+
+## Stage 1: Pre-encoding (MUST be implemented exactly as specified)
+
+Compute carry signals and derive `lza_precod[23:0]`. These formulas are the LZA algorithm and MUST be implemented exactly — do NOT modify them.
+
+```verilog
+// Carry signals
+assign carry_p[23:0] = summand[23:0] ^ addend[23:0];   // propagate
+assign carry_g[23:0] = summand[23:0] & addend[23:0];   // generate
+assign carry_d[23:0] = ~(summand[23:0] | addend[23:0]); // delete
+
+// Pre-code bit 0 (special case — uses carry_p[1])
+assign lza_precod[0] =
+     carry_p[1] && (carry_g[0] && sub_vld || carry_d[0])
+ || !carry_p[1] && (carry_d[0] && sub_vld || carry_g[0]);
+
+// Pre-code bit 23 (special case — MSB boundary)
+assign lza_precod[23] =
+     sub_vld && (carry_g[23] && !carry_d[22] || carry_d[23] && !carry_g[22])
+ || !sub_vld && (carry_d[23] && !carry_d[22] || !carry_d[23]);
+
+// Pre-code bits [22:1] (general case — uses carry_p[i+1], carry_g/d[i], carry_g/d[i-1])
+assign lza_precod[22:1] =
+    carry_p[23:2] & (carry_g[22:1] & ~carry_d[21:0] | carry_d[22:1] & ~carry_g[21:0])
+ | ~carry_p[23:2] & (carry_g[22:1] & ~carry_g[21:0] | carry_d[22:1] & ~carry_d[21:0]);
+```
+
+## Stage 2: Priority Encoding (this is where you optimize)
+
+Find the position of the most-significant '1' in `lza_precod[23:0]` and encode it as a 5-bit count **from the MSB**. This is where you have freedom to choose your implementation strategy.
+
+**CRITICAL — encoding direction is MSB-first (position counts DOWN from bit 23):**
+
+| lza_precod pattern | lza_result | Meaning |
+|-|-|-|
+| `24'b1xxxxxxxxxxxxxxxxxxxxxxx` (bit 23 set) | `5'd0` | Leading one at MSB, 0 leading zeros |
+| `24'b01xxxxxxxxxxxxxxxxxxxxxx` (bit 22 is first '1') | `5'd1` | 1 leading zero |
+| `24'b001xxxxxxxxxxxxxxxxxxxxx` (bit 21 is first '1') | `5'd2` | 2 leading zeros |
+| ... | ... | ... |
+| `24'b00000000000000000000001x` (bit 1 is first '1') | `5'd22` | 22 leading zeros |
+| `24'b000000000000000000000001` (bit 0 is first '1') | `5'd23` | 23 leading zeros |
+| `24'b000000000000000000000000` (all zeros) | `5'd24` | No leading one |
+
+The formula is: **`lza_result = 23 - (position of highest set bit)`**. So bit 23 → result 0, bit 0 → result 23, no bits set → result 24.
+
+`lza_result_zero = 1` when `lza_precod` is all zeros (i.e., `~|lza_precod[23:0]`).
+
+## Baseline Implementation (correct but not optimized)
+
+The reference uses a flat `casez` priority chain — correct, but has O(n) delay:
+```verilog
+always @(lza_precod[23:0])
+begin
+casez(lza_precod[23:0])
+  24'b1???????????????????????:lza_result[4:0] = 5'd0;
+  24'b01??????????????????????:lza_result[4:0] = 5'd1;
+  24'b001?????????????????????:lza_result[4:0] = 5'd2;
+  // ... 21 more cases ...
+  24'b000000000000000000000001:lza_result[4:0] = 5'd23;
+  default                     :lza_result[4:0] = 5'd24;
+endcase
+end
+```
+
+## Available Building Blocks (compiled alongside your code)
+
+These modules are provided as separate files and compiled together with your design. You may instantiate them:
+
+```verilog
+// 4:2 LZA compressor — finds first '1' in a 4-bit input (MSB-first)
+module ct_vfmau_lza_42(lza_p0, lza_p1, lza_precod, lza_vld);
+  input  [3:0] lza_precod;   // 4-bit input to scan
+  output       lza_p0;       // encoded position bit 0
+  output       lza_p1;       // encoded position bit 1
+  output       lza_vld;      // '1' if any bit set
+  // Implementation:
+  //   lza_vld = |lza_precod[3:0]
+  //   lza_p0  = !lza_precod[3] && (lza_precod[2] || !lza_precod[1])
+  //   lza_p1  = !(lza_precod[2] || lza_precod[3])
+  // Maps: bit3→00, bit2→01, bit1→10, bit0→11 (MSB-first 2-bit position)
+```
+
+```verilog
+// 3:2 LZA compressor — finds first '1' in a 3-bit input (MSB-first)
+module ct_vfmau_lza_32(lza_p0, lza_p1, lza_precod, lza_vld);
+  input  [2:0] lza_precod;   // 3-bit input to scan
+  output       lza_p0;       // encoded position bit 0
+  output       lza_p1;       // encoded position bit 1
+  output       lza_vld;      // '1' if any bit set
+  // Implementation:
+  //   lza_vld = |lza_precod[2:0]
+  //   lza_p0  = !lza_precod[2] && lza_precod[1]
+  //   lza_p1  = !lza_precod[2] && !lza_precod[1]
+  // Maps: bit2→00, bit1→01, bit0→10 (MSB-first 2-bit position)
+```
+
+You may also implement entirely custom encoding logic without using these building blocks.
+
+## Optimization Goals
+
+Minimize **ADP (Area x Delay Product)** after technology-mapped synthesis with sky130 standard cells. The casez chain has O(24) gate delay. Strategies to reduce delay and area:
+- Hierarchical tree-based priority encoding using the 4:2 and 3:2 compressor building blocks (log-depth)
+- Balanced binary tree: split 24 bits into groups, encode each group, then combine
+- Direct binary encoding using boolean equations
+- One-hot to binary conversion approaches
+
+## Constraints
+
+- The module name MUST be `ct_vfmau_lza_simd_half`
+- All port names, widths, and directions MUST match exactly
+- Use Verilog-2001 or Verilog-2005 syntax compatible with `iverilog -g2005-sv`
+- Pure combinational logic — no clocks, no registers
+- Functional correctness: `lza_result[4:0]` and `lza_result_zero` must be identical to the reference for ALL input combinations of summand[23:0], addend[23:0], and sub_vld
+
+Output only Verilog code within ```verilog fences.

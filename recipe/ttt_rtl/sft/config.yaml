@@ -1,0 +1,66 @@
+# SFT warm-up pipeline configuration for TTT-RTL
+
+# RTLLM benchmark
+rtllm_dir: RTLLM
+
+# Models to query via OpenRouter
+models:
+  - id: anthropic/claude-sonnet-4
+    name: claude-sonnet
+    max_tokens: 8192
+  - id: openai/gpt-4o
+    name: gpt-4o
+    max_tokens: 8192
+  - id: google/gemini-2.5-pro-preview
+    name: gemini-pro
+    max_tokens: 8192
+
+# Collection parameters
+collection:
+  num_samples: 10          # samples per (problem, model)
+  temperature: 0.8
+  concurrency: 8           # max concurrent requests per model
+  max_retries: 3
+  retry_delay: 5.0         # seconds between retries
+  openrouter_base_url: https://openrouter.ai/api/v1
+  proxy: null              # optional explicit proxy URL, e.g. http://127.0.0.1:7890
+
+# Output paths (relative to repo root)
+paths:
+  data_dir: recipe/ttt_rtl/sft/data
+  raw_dir: recipe/ttt_rtl/sft/data/raw
+  filtered_file: recipe/ttt_rtl/sft/data/filtered.jsonl
+  train_file: recipe/ttt_rtl/sft/data/train.parquet
+  val_file: recipe/ttt_rtl/sft/data/val.parquet
+
+# Filtering parameters
+filtering:
+  compile_timeout_s: 30.0
+  sim_timeout_s: 30.0
+  synth_timeout_s: 60.0
+  max_workers: 8
+  require_functional: true  # only keep functionally correct samples
+  dedup: true               # deduplicate within each problem
+
+# Formatting parameters
+formatting:
+  val_split: 0.1            # fraction of problems held out for validation
+  include_thinking: true    # include <thinking> content in assistant response
+
+# SFT training parameters
+training:
+  model_path: ~/models/Qwen3-8B
+  checkpoint_dir: checkpoints/ttt-rtl-sft-mixed
+  lr: 1e-5
+  total_epochs: 3
+  max_length: 16384
+  train_batch_size: 64      # global batch size across all GPUs
+  micro_batch_size_per_gpu: 1
+  n_gpus: 8
+  warmup_steps_ratio: 0.1
+  strategy: fsdp2
+  logger:
+    - console
+    - swanlab
+  project_name: ttt-rtl-sft
+  experiment_name: warmup

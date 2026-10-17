@@ -1,0 +1,44 @@
+# SFT warm-up configuration for TTT-C910-FPU
+# Trains Qwen3-8B-65k on verified mult_compressor solutions before RL.
+
+paths:
+  repo_root: .                          # run from repo root
+  solutions_dir: recipe/ttt_c910_fpu/problems/mult_compressor/solutions
+  reward_measurements: recipe/ttt_c910_fpu/problems/mult_compressor/solutions/reward_measurements.json
+  reference_v: recipe/ttt_c910_fpu/problems/mult_compressor/reference.v
+  prompt_template: recipe/ttt_c910_fpu/problems/mult_compressor/prompt_template.txt
+  failed_rollout_glob: checkpoints/verl-ttt-c910/mc_exp6/rollout_samples/*.jsonl
+  data_dir: recipe/ttt_c910_fpu/sft/data
+  train_file: recipe/ttt_c910_fpu/sft/data/train.parquet
+  val_file: recipe/ttt_c910_fpu/sft/data/val.parquet
+
+sft_data:
+  # Set true to prepend <think>\n\n</think>\n\n before the Verilog block,
+  # matching the RL generation format (enable_thinking=True).
+  # Set false (default) to train on plain Verilog responses.
+  include_thinking_placeholder: false
+
+  val_fraction: 0.15                   # fraction of examples held out for validation
+  iterative_max_pairs_per_source: 3    # max improvement targets per source solution
+  min_adp_improvement_pct: 1.0         # minimum ADP improvement % to form a pair
+  random_seed: 42
+  include_failure_repair: true
+  max_failed_samples: 24
+  max_failed_samples_per_category: 6
+  
+training:
+  model_path: Qwen/Qwen3-8B
+  checkpoint_dir: checkpoints/ttt-c910-sft
+  lr: 5e-6
+  total_epochs: 3
+  # Qwen3-8B-65k supports 65k context; set high enough for reference code + solution
+  max_length: 32768
+  train_batch_size: 16       # global batch size (16 GPU × micro_batch 1 per GPU = 2 nodes × 8 GPU)
+  micro_batch_size_per_gpu: 1
+  n_gpus: 8                  # GPUs per node
+  warmup_steps_ratio: 0.05
+  strategy: fsdp2
+  user_liger: false
+  model_dtype: bf16     # halves model weight memory vs fp32 default (~60 GB → ~35 GB/GPU)
+  project_name: ttt-c910-sft
+  experiment_name: mult_compressor_warmup

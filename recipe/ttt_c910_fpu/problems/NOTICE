@@ -1,0 +1,11 @@
+The reference RTL in this directory (reference.v, reference_renamed.v and deps/*.v
+in each problem) is taken from the XuanTie OpenC910 RISC-V core:
+https://github.com/XUANTIE-RV/openc910
+
+Copyright 2019-2021 T-Head Semiconductor Co., Ltd.
+Licensed under the Apache License, Version 2.0.
+
+Some reference.v files have their license header removed because the file text is
+inserted verbatim into the model prompt; the notice above applies to them unchanged.
+Module renames (reference_renamed.v), prompt templates, specs and testbenches are
+part of Alpha-RTL.

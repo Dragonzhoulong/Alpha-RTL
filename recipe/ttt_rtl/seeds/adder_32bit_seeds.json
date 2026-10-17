@@ -1,0 +1,44 @@
+{
+  "solutions": [
+    {
+      "problem_id": "adder_32bit",
+      "verilog_code": "// Seed A — Behavioral adder.\n// Lets the synthesizer pick the best gate-level adder topology for the\n// target library; typically yields the smallest area and good delay.\nmodule adder_32bit(A, B, S, C32);\n    input  [31:0] A;\n    input  [31:0] B;\n    output [31:0] S;\n    output        C32;\n\n    assign {C32, S} = A + B;\nendmodule\n",
+      "value": 39.464023175804066,
+      "raw_score": 39.464023175804066,
+      "ppa_score": 1.0240641429524604,
+      "ppa_area": 191.786,
+      "ppa_delay": 1221.3,
+      "observation": "Verified seed (adder_32bit_A_behavioral): functional PASS, area=191.8um2, delay=1221.3ps."
+    },
+    {
+      "problem_id": "adder_32bit",
+      "verilog_code": "// Seed B — Hierarchical 16-bit carry-lookahead blocks.\n// Matches the \"adder_32bit consists of several 16-bit CLA blocks\" spec.\n// Uses standard OR-based carry equations (vs. the reference's non-standard\n// XOR form) and a clean parameterizable carry chain inside each block.\nmodule adder_32bit(A, B, S, C32);\n    input  [31:0] A;\n    input  [31:0] B;\n    output [31:0] S;\n    output        C32;\n\n    wire c16;\n\n    cla16 cla_lo (.A(A[15:0]),  .B(B[15:0]),  .cin(1'b0), .S(S[15:0]),  .cout(c16));\n    cla16 cla_hi (.A(A[31:16]), .B(B[31:16]), .cin(c16),  .S(S[31:16]), .cout(C32));\nendmodule\n\nmodule cla16(A, B, cin, S, cout);\n    input  [15:0] A;\n    input  [15:0] B;\n    input         cin;\n    output [15:0] S;\n    output        cout;\n\n    wire [15:0] p = A ^ B;\n    wire [15:0] g = A & B;\n    wire [16:0] c;\n    assign c[0] = cin;\n\n    genvar i;\n    generate\n        for (i = 0; i < 16; i = i + 1) begin : carry_chain\n            assign c[i+1] = g[i] | (p[i] & c[i]);\n        end\n    endgenerate\n\n    assign S    = p ^ c[15:0];\n    assign cout = c[16];\nendmodule\n",
+      "value": 35.336668978947664,
+      "raw_score": 35.336668978947664,
+      "ppa_score": 1.147518776955085,
+      "ppa_area": 195.776,
+      "ppa_delay": 1297.6000000000001,
+      "observation": "Verified seed (adder_32bit_B_cla16x2): functional PASS, area=195.8um2, delay=1297.6ps."
+    },
+    {
+      "problem_id": "adder_32bit",
+      "verilog_code": "// Seed C — 16/16 carry-select adder.\n// Computes both possible high halves speculatively (cin=0 and cin=1) and\n// muxes based on the low half's carry-out. Shorter critical path at the cost\n// of a duplicated upper adder.\nmodule adder_32bit(A, B, S, C32);\n    input  [31:0] A;\n    input  [31:0] B;\n    output [31:0] S;\n    output        C32;\n\n    wire [16:0] sum_lo  = {1'b0, A[15:0]}  + {1'b0, B[15:0]};\n    wire [16:0] sum_hi0 = {1'b0, A[31:16]} + {1'b0, B[31:16]};\n    wire [16:0] sum_hi1 = {1'b0, A[31:16]} + {1'b0, B[31:16]} + 17'd1;\n\n    wire        c16    = sum_lo[16];\n    wire [16:0] sum_hi = c16 ? sum_hi1 : sum_hi0;\n\n    assign S   = {sum_hi[15:0], sum_lo[15:0]};\n    assign C32 = sum_hi[16];\nendmodule\n",
+      "value": 35.39593260356661,
+      "raw_score": 35.39593260356661,
+      "ppa_score": 1.145535856040621,
+      "ppa_area": 229.824,
+      "ppa_delay": 958.3000000000001,
+      "observation": "Verified seed (adder_32bit_C_carry_select): functional PASS, area=229.8um2, delay=958.3ps."
+    },
+    {
+      "problem_id": "adder_32bit",
+      "verilog_code": "// Seed D — 32-bit Kogge-Stone parallel-prefix adder.\n// log2(32)=5 prefix stages; all positions get their prefix (G,P) in parallel.\n// Shortest logical depth of the four seeds.\nmodule adder_32bit(A, B, S, C32);\n    input  [31:0] A;\n    input  [31:0] B;\n    output [31:0] S;\n    output        C32;\n\n    wire [31:0] p0 = A ^ B;\n    wire [31:0] g0 = A & B;\n\n    wire [31:0] g1, p1, g2, p2, g3, p3, g4, p4, g5, p5;\n\n    genvar i;\n    // Stage 1: combine with neighbour 1 away\n    generate for (i = 0; i < 32; i = i + 1) begin : st1\n        if (i < 1) begin\n            assign g1[i] = g0[i];\n            assign p1[i] = p0[i];\n        end else begin\n            assign g1[i] = g0[i] | (p0[i] & g0[i-1]);\n            assign p1[i] = p0[i] & p0[i-1];\n        end\n    end endgenerate\n\n    // Stage 2: span 2\n    generate for (i = 0; i < 32; i = i + 1) begin : st2\n        if (i < 2) begin\n            assign g2[i] = g1[i];\n            assign p2[i] = p1[i];\n        end else begin\n            assign g2[i] = g1[i] | (p1[i] & g1[i-2]);\n            assign p2[i] = p1[i] & p1[i-2];\n        end\n    end endgenerate\n\n    // Stage 3: span 4\n    generate for (i = 0; i < 32; i = i + 1) begin : st3\n        if (i < 4) begin\n            assign g3[i] = g2[i];\n            assign p3[i] = p2[i];\n        end else begin\n            assign g3[i] = g2[i] | (p2[i] & g2[i-4]);\n            assign p3[i] = p2[i] & p2[i-4];\n        end\n    end endgenerate\n\n    // Stage 4: span 8\n    generate for (i = 0; i < 32; i = i + 1) begin : st4\n        if (i < 8) begin\n            assign g4[i] = g3[i];\n            assign p4[i] = p3[i];\n        end else begin\n            assign g4[i] = g3[i] | (p3[i] & g3[i-8]);\n            assign p4[i] = p3[i] & p3[i-8];\n        end\n    end endgenerate\n\n    // Stage 5: span 16\n    generate for (i = 0; i < 32; i = i + 1) begin : st5\n        if (i < 16) begin\n            assign g5[i] = g4[i];\n            assign p5[i] = p4[i];\n        end else begin\n            assign g5[i] = g4[i] | (p4[i] & g4[i-16]);\n            assign p5[i] = p4[i] & p4[i-16];\n        end\n    end endgenerate\n\n    // Carry into bit i is the prefix-G of bits 0..i-1; cin assumed 0.\n    wire [31:0] c;\n    assign c[0] = 1'b0;\n    generate for (i = 1; i < 32; i = i + 1) begin : carries\n        assign c[i] = g5[i-1];\n    end endgenerate\n\n    assign S   = p0 ^ c;\n    assign C32 = g5[31];\nendmodule\n",
+      "value": 36.052936526035914,
+      "raw_score": 36.052936526035914,
+      "ppa_score": 1.1240034291388838,
+      "ppa_area": 229.558,
+      "ppa_delay": 927.8,
+      "observation": "Verified seed (adder_32bit_D_kogge_stone): functional PASS, area=229.6um2, delay=927.8ps."
+    }
+  ]
+}

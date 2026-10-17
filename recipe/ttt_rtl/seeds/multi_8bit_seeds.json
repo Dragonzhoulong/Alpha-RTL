@@ -1,0 +1,44 @@
+{
+  "solutions": [
+    {
+      "problem_id": "multi_8bit",
+      "verilog_code": "module multi_8bit (\n    input  wire [ 7:0] A,\n    input  wire [ 7:0] B,\n    output wire [15:0] product\n);\n    assign product = A * B;\nendmodule\n",
+      "value": 30.339518011205215,
+      "raw_score": 30.339518011205215,
+      "ppa_score": 2.6632092101201996,
+      "ppa_area": 359.366,
+      "ppa_delay": 900.0,
+      "observation": "Verified seed (multi_8bit_A_synth_star): functional PASS, area=359.4um2, delay=900.0ps."
+    },
+    {
+      "problem_id": "multi_8bit",
+      "verilog_code": "module multi_8bit (\n    input  wire [ 7:0] A,\n    input  wire [ 7:0] B,\n    output wire [15:0] product\n);\n    // Radix-4 Booth, unsigned 8x8: zero-extend B to 10 bits to make it a\n    // signed-positive number, giving 5 Booth digits (column 0,2,4,6,8) each\n    // in {-2A,-A,0,+A,+2A}. The final sum still equals A*B mod 2^16.\n    wire signed [10:0] Ap  = {{3{1'b0}}, A};   // +A\n    wire signed [10:0] An  = -Ap;               // -A\n    wire signed [10:0] A2p = Ap <<< 1;          // +2A\n    wire signed [10:0] A2n = -A2p;              // -2A\n\n    function automatic [10:0] booth_sel;\n        input [2:0] g;\n        input signed [10:0] ap, an, a2p, a2n;\n        begin\n            case (g)\n                3'b001, 3'b010: booth_sel = ap;\n                3'b011:         booth_sel = a2p;\n                3'b100:         booth_sel = a2n;\n                3'b101, 3'b110: booth_sel = an;\n                default:        booth_sel = 11'sd0;\n            endcase\n        end\n    endfunction\n\n    wire [9:0] B_ext = {2'b00, B};   // zero-extend; B_ext[-1] is implicit 0\n\n    wire [2:0] g0 = {B_ext[1], B_ext[0], 1'b0};\n    wire [2:0] g1 = {B_ext[3], B_ext[2], B_ext[1]};\n    wire [2:0] g2 = {B_ext[5], B_ext[4], B_ext[3]};\n    wire [2:0] g3 = {B_ext[7], B_ext[6], B_ext[5]};\n    wire [2:0] g4 = {B_ext[9], B_ext[8], B_ext[7]};\n\n    wire signed [10:0] pp0r = booth_sel(g0, Ap, An, A2p, A2n);\n    wire signed [10:0] pp1r = booth_sel(g1, Ap, An, A2p, A2n);\n    wire signed [10:0] pp2r = booth_sel(g2, Ap, An, A2p, A2n);\n    wire signed [10:0] pp3r = booth_sel(g3, Ap, An, A2p, A2n);\n    wire signed [10:0] pp4r = booth_sel(g4, Ap, An, A2p, A2n);\n\n    // Sign-extend each PP to 16 bits, then arithmetic-shift to its column\n    wire signed [15:0] pp0 = {{5{pp0r[10]}}, pp0r};\n    wire signed [15:0] pp1 = {{5{pp1r[10]}}, pp1r} <<< 2;\n    wire signed [15:0] pp2 = {{5{pp2r[10]}}, pp2r} <<< 4;\n    wire signed [15:0] pp3 = {{5{pp3r[10]}}, pp3r} <<< 6;\n    wire signed [15:0] pp4 = {{5{pp4r[10]}}, pp4r} <<< 8;\n\n    assign product = pp0 + pp1 + pp2 + pp3 + pp4;\nendmodule\n",
+      "value": 19.746782558148702,
+      "raw_score": 19.746782558148702,
+      "ppa_score": 4.1761067049547025,
+      "ppa_area": 401.66,
+      "ppa_delay": 1113.3,
+      "observation": "Verified seed (multi_8bit_B_booth_r4): functional PASS, area=401.7um2, delay=1113.3ps."
+    },
+    {
+      "problem_id": "multi_8bit",
+      "verilog_code": "module multi_8bit (\n    input  wire [ 7:0] A,\n    input  wire [ 7:0] B,\n    output wire [15:0] product\n);\n    // Wallace-tree style: 8 AND-rows of partial products, then column-wise\n    // 3:2 compression to two rows, finished by a single carry-propagate add.\n    // Written as bit-level expressions to surface the carry-save structure to\n    // the synthesizer (vs. a chain of `+` operators).\n    wire [15:0] pp [0:7];\n    genvar i;\n    generate\n        for (i = 0; i < 8; i = i + 1) begin : g_pp\n            assign pp[i] = {8'b0, (A & {8{B[i]}})} << i;\n        end\n    endgenerate\n\n    // First reduction layer: combine rows {0,1,2}, {3,4,5}, {6,7,carry slot}\n    // into 6 rows (sum/carry pairs from 3:2 compressors per column).\n    wire [15:0] s012, c012, s345, c345;\n    assign s012 = pp[0] ^ pp[1] ^ pp[2];\n    assign c012 = ((pp[0] & pp[1]) | (pp[1] & pp[2]) | (pp[0] & pp[2])) << 1;\n    assign s345 = pp[3] ^ pp[4] ^ pp[5];\n    assign c345 = ((pp[3] & pp[4]) | (pp[4] & pp[5]) | (pp[3] & pp[5])) << 1;\n\n    // Second layer: 4 rows {s012, c012, s345, c345} + remaining 2 rows {pp6, pp7}\n    // Compress {s012, c012, s345} → (s_a, c_a) and {c345, pp[6], pp[7]} → (s_b, c_b)\n    wire [15:0] s_a, c_a, s_b, c_b;\n    assign s_a = s012 ^ c012 ^ s345;\n    assign c_a = ((s012 & c012) | (c012 & s345) | (s012 & s345)) << 1;\n    assign s_b = c345 ^ pp[6] ^ pp[7];\n    assign c_b = ((c345 & pp[6]) | (pp[6] & pp[7]) | (c345 & pp[7])) << 1;\n\n    // Third layer: 4 → 2 with one more 3:2 + the leftover row\n    wire [15:0] s_c, c_c;\n    assign s_c = s_a ^ c_a ^ s_b;\n    assign c_c = ((s_a & c_a) | (c_a & s_b) | (s_a & s_b)) << 1;\n\n    // Final CPA: s_c + c_c + c_b\n    assign product = s_c + c_c + c_b;\nendmodule\n",
+      "value": 32.711507241808135,
+      "raw_score": 32.711507241808135,
+      "ppa_score": 2.463373640214413,
+      "ppa_area": 370.272,
+      "ppa_delay": 809.2,
+      "observation": "Verified seed (multi_8bit_C_wallace): functional PASS, area=370.3um2, delay=809.2ps."
+    },
+    {
+      "problem_id": "multi_8bit",
+      "verilog_code": "module multi_8bit (\n    input  wire [ 7:0] A,\n    input  wire [ 7:0] B,\n    output wire [15:0] product\n);\n    // Urdhva Tiryagbhyam (Vedic) decomposition: split each operand into two\n    // 4-bit halves and sum the 4 cross-products. Lets the synthesizer optimise\n    // each 4x4 sub-multiply independently — typically a small but real ADP\n    // win at this width.\n    wire [3:0] a_l = A[3:0];\n    wire [3:0] a_h = A[7:4];\n    wire [3:0] b_l = B[3:0];\n    wire [3:0] b_h = B[7:4];\n\n    wire [7:0] ll = a_l * b_l;     // bits  [7:0]\n    wire [7:0] lh = a_l * b_h;     // bits [11:4]\n    wire [7:0] hl = a_h * b_l;     // bits [11:4]\n    wire [7:0] hh = a_h * b_h;     // bits [15:8]\n\n    wire [8:0] mid = lh + hl;      // 9 bits to hold carry\n    wire [15:0] cross_term = {3'b0, mid, 4'b0};\n    wire [15:0] hi    = {hh, 8'b0};\n    wire [15:0] lo    = {8'b0, ll};\n\n    assign product = lo + cross_term + hi;\nendmodule\n",
+      "value": 20.187031627039442,
+      "raw_score": 20.187031627039442,
+      "ppa_score": 4.079783341302905,
+      "ppa_area": 403.256,
+      "ppa_delay": 1103.6,
+      "observation": "Verified seed (multi_8bit_D_vedic): functional PASS, area=403.3um2, delay=1103.6ps."
+    }
+  ]
+}

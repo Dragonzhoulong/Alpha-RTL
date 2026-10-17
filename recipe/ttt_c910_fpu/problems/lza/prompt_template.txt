@@ -1,0 +1,92 @@
+You are an expert digital circuit designer specializing in high-performance arithmetic units.
+
+## Task
+
+Implement a Verilog module `ct_vfmau_lza` — a 108-bit Leading Zero Anticipator (LZA) for the floating-point multiply-accumulate unit (VFMAU) of an out-of-order RISC-V CPU.
+
+## Module Interface (MUST match exactly)
+
+```verilog
+module ct_vfmau_lza(
+  addend,                           // input  [107:0]
+  lza_result,                       // output [6:0]
+  sub_vld,                          // input
+  summand                           // input  [107:0]
+);
+```
+
+## Functional Specification
+
+The LZA predicts the number of leading zeros in the result of `summand + addend` (or `summand - addend` when `sub_vld=1`) **before** the actual addition. This enables overlapping normalization shift with the adder, saving a full cycle in the FP pipeline.
+
+### Step 1: Pre-encoding
+
+Compute bit-wise carry signals from summand and addend:
+- `carry_p[107:0] = summand ^ addend` (propagate)
+- `carry_g[107:0] = summand & addend` (generate)
+- `carry_d[107:0] = ~(summand | addend)` (delete/kill)
+
+Derive the LZA pre-code `lza_precod[107:0]`:
+- Bit 0: `carry_p[1] & (carry_g[0] & sub_vld | carry_d[0]) | ~carry_p[1] & (carry_d[0] & sub_vld | carry_g[0])`
+- Bit 107: `sub_vld & (carry_g[107] & ~carry_d[106] | carry_d[107] & ~carry_g[106]) | ~sub_vld & (carry_d[107] & ~carry_d[106] | ~carry_d[107])`
+- Bits [106:1]: `carry_p[i+1] & (carry_g[i] & ~carry_d[i-1] | carry_d[i] & ~carry_g[i-1]) | ~carry_p[i+1] & (carry_g[i] & ~carry_g[i-1] | carry_d[i] & ~carry_d[i-1])`
+
+Each bit of `lza_precod` is '1' at positions where the leading one of the add/subtract result might be located.
+
+### Step 2: Priority Encoding
+
+Find the position of the most significant '1' in `lza_precod[107:0]` using a hierarchical encoder. The result is a 7-bit value:
+- `lza_result = 0` means the leading one is at bit 107 (MSB)
+- `lza_result = 107` means the leading one is at bit 0 (LSB)
+- `lza_result = 108` means no leading one found (all zeros)
+
+### Output
+
+`lza_result[6:0]` — the predicted leading zero count (7 bits, range 0..108).
+
+## Available Building Blocks
+
+You may use these pre-existing modules:
+
+```verilog
+// 4:2 LZA compressor — finds the first '1' in a 4-bit input
+module ct_vfmau_lza_42(lza_p0, lza_p1, lza_precod, lza_vld);
+  input  [3:0] lza_precod;   // 4-bit input to scan
+  output       lza_p0;       // encoded position bit 0
+  output       lza_p1;       // encoded position bit 1
+  output       lza_vld;      // '1' if any bit set in lza_precod
+  // lza_vld = |lza_precod[3:0]
+  // {lza_p1, lza_p0} encodes the position of the first '1' from MSB
+```
+
+```verilog
+// 3:2 LZA compressor — finds the first '1' in a 3-bit input
+module ct_vfmau_lza_32(lza_p0, lza_p1, lza_precod, lza_vld);
+  input  [2:0] lza_precod;   // 3-bit input to scan
+  output       lza_p0;       // encoded position bit 0
+  output       lza_p1;       // encoded position bit 1
+  output       lza_vld;      // '1' if any bit set in lza_precod
+  // lza_vld = |lza_precod[2:0]
+  // {lza_p1, lza_p0} encodes the position of the first '1' from MSB
+```
+
+You may also implement entirely custom encoding logic without using these building blocks.
+
+## Optimization Goals
+
+Minimize **ADP (Area x Delay Product)** after technology-mapped synthesis with sky130 standard cells. Strategies include:
+- Alternative hierarchical encoding tree topologies (different split points, fan-in)
+- One-hot to binary conversion approaches (tree-based vs. priority chain)
+- Simplified pre-encoding formulas
+- Balanced logic depth across the encoding tree levels
+- Different LZA algorithms (Schmookler-Nowka, Bruguera-Lang, Suzuki variants)
+- Direct binary encoding instead of multi-level MUX cascades
+
+## Constraints
+
+- The module name MUST be `ct_vfmau_lza`
+- All port names, widths, and directions MUST match exactly
+- Pure combinational logic — no clocks, no registers
+- Functional correctness: `lza_result[6:0]` must be identical to the reference for ALL input combinations of summand[107:0], addend[107:0], and sub_vld
+
+Output only Verilog code within ```verilog fences.

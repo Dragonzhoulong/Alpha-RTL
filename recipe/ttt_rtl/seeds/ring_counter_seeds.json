@@ -1,0 +1,44 @@
+{
+  "solutions": [
+    {
+      "problem_id": "ring_counter",
+      "verilog_code": "module ring_counter (\n    input  wire       clk,\n    input  wire       reset,\n    output wire [7:0] out\n);\n    reg [7:0] state;\n\n    always @(posedge clk or posedge reset) begin\n        if (reset) state <= 8'b0000_0001;\n        else       state <= {state[6:0], state[7]};\n    end\n\n    assign out = state;\nendmodule\n",
+      "value": 11.1,
+      "raw_score": 11.1,
+      "ppa_score": 1.75795213743072,
+      "ppa_area": 46.816,
+      "ppa_delay": 99.9,
+      "observation": "Verified seed (ring_counter_A_reference): functional PASS, area=46.8um2, delay=99.9ps."
+    },
+    {
+      "problem_id": "ring_counter",
+      "verilog_code": "module ring_counter (\n    input  wire       clk,\n    input  wire       reset,\n    output reg  [7:0] out\n);\n    // Direct register-on-port variant: eliminate the intermediate state reg\n    // so yosys sees one 8-bit FF cluster instead of state+driver.\n    always @(posedge clk or posedge reset) begin\n        if (reset) out <= 8'b0000_0001;\n        else       out <= {out[6:0], out[7]};\n    end\nendmodule\n",
+      "value": 11.1,
+      "raw_score": 11.1,
+      "ppa_score": 1.75795213743072,
+      "ppa_area": 46.816,
+      "ppa_delay": 99.9,
+      "observation": "Verified seed (ring_counter_B_reg_out): functional PASS, area=46.8um2, delay=99.9ps."
+    },
+    {
+      "problem_id": "ring_counter",
+      "verilog_code": "module ring_counter (\n    input  wire       clk,\n    input  wire       reset,\n    output wire [7:0] out\n);\n    // Rotate-left expressed as (state<<1) | (state>>7) — synthesizer usually\n    // reduces this to the same 1-bit-shift LUT, but it exercises a different\n    // source form than the concat-based reference.\n    reg [7:0] state;\n\n    always @(posedge clk or posedge reset) begin\n        if (reset) state <= 8'h01;\n        else       state <= (state << 1) | (state >> 7);\n    end\n\n    assign out = state;\nendmodule\n",
+      "value": 11.1,
+      "raw_score": 11.1,
+      "ppa_score": 1.75795213743072,
+      "ppa_area": 46.816,
+      "ppa_delay": 99.9,
+      "observation": "Verified seed (ring_counter_C_rotate): functional PASS, area=46.8um2, delay=99.9ps."
+    },
+    {
+      "problem_id": "ring_counter",
+      "verilog_code": "module ring_counter (\n    input  wire       clk,\n    input  wire       reset,\n    output reg  [7:0] out\n);\n    // Pointer-decoded variant: store a 3-bit index (~3 FFs instead of 8) and\n    // one-hot-decode it combinationally. Trades FFs for a small decoder.\n    reg [2:0] idx;\n\n    always @(posedge clk or posedge reset) begin\n        if (reset) idx <= 3'd0;\n        else       idx <= idx + 3'd1;\n    end\n\n    always @* begin\n        out = 8'b0000_0001 << idx;\n    end\nendmodule\n",
+      "value": 22.660670429890907,
+      "raw_score": 22.660670429890907,
+      "ppa_score": 0.8153513329500001,
+      "ppa_area": 33.25,
+      "ppa_delay": 198.0,
+      "observation": "Verified seed (ring_counter_D_decoded): functional PASS, area=33.2um2, delay=198.0ps."
+    }
+  ]
+}

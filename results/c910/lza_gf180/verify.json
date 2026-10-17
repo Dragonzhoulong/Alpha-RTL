@@ -1,0 +1,24 @@
+{
+  "problem": "lza_simd_half",
+  "liberty": "gf180mcu_fd_sc_mcu7t5v0__tt_025C_1v80.lib",
+  "seed": 42,
+  "model": "Qwen3-8B",
+  "steps": 100,
+  "rollouts_per_step": 32,
+  "reference": {
+    "area_um2": 4930.4192,
+    "delay_ps": 14659.0,
+    "adp": 72275015.0528
+  },
+  "discovered": {
+    "area_um2": 3835.0144,
+    "delay_ps": 12241.099999999999,
+    "adp": 46944794.77183999,
+    "found_at_step": 72
+  },
+  "adp_reduction": 0.35046994127161646,
+  "checks": {
+    "simulation": true,
+    "formal_equivalence": true
+  }
+}

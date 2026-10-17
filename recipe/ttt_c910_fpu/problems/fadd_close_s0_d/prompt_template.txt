@@ -1,0 +1,136 @@
+You are an expert digital circuit designer specializing in high-performance arithmetic units.
+
+## Task
+
+Implement a Verilog module `ct_fadd_close_s0_d` — the double-precision floating-point adder
+"close path" stage 0 from the OpenC910 RISC-V CPU's Vector FP ALU (VFALU). This module
+is on the critical timing path of every close-path FP subtraction.
+
+## Module Interface (MUST match exactly)
+
+```verilog
+module ct_fadd_close_s0_d(
+  close_adder0,
+  close_adder1,
+  close_eq,
+  close_op_chg,
+  close_sum_a_b,
+  close_sum_b_a,
+  ff1_pred,
+  ff1_pred_onehot
+);
+
+input   [52:0]  close_adder0;
+input   [52:0]  close_adder1;
+output          close_eq;
+output          close_op_chg;
+output  [52:0]  close_sum_a_b;
+output  [52:0]  close_sum_b_a;
+output  [5 :0]  ff1_pred;
+output  [52:0]  ff1_pred_onehot;
+```
+
+## Stage 1: Subtraction (MUST be implemented exactly as specified)
+
+Compute both A−B and B−A simultaneously. These assignments are fixed — do NOT modify them.
+
+```verilog
+wire [53:0] close_sum0, close_sum1;
+assign close_sum0[53:0]  = {1'b0, close_adder0[52:0]} - {1'b0, close_adder1[52:0]};
+assign close_sum1[53:0]  = {1'b0, close_adder1[52:0]} - {1'b0, close_adder0[52:0]};
+assign close_sum_a_b     = close_sum0[52:0];
+assign close_sum_b_a     = close_sum1[52:0];
+assign close_op_chg      = close_sum0[53];              // borrow: B > A
+assign close_eq          = !close_sum0[53] && !close_sum1[53];  // A == B
+```
+
+## Stage 2: FF1 Pre-encoding (MUST be implemented exactly as specified)
+
+Derive carry-propagation signals T, G, Z and the FF1 prediction vector F[52:0].
+These formulas implement the LZA (Leading-Zero Anticipation) algorithm and MUST
+be reproduced exactly — do NOT modify them.
+
+```verilog
+wire [52:0] ff1_c, ff1_t, ff1_g, ff1_z, ff1_f;
+
+assign ff1_c[52:0]    = ~close_adder1[52:0];              // complement B
+assign ff1_t[52:0]    = close_adder0[52:0] ^ ff1_c[52:0]; // propagate
+assign ff1_g[52:0]    = close_adder0[52:0] & ff1_c[52:0]; // generate
+assign ff1_z[52:0]    = (~close_adder0[52:0]) & (~ff1_c[52:0]); // delete
+
+// F[52]: MSB boundary (no upper neighbor)
+assign ff1_f[52]   = (ff1_g[52] & ~ff1_z[51]) | (ff1_z[52] & ~ff1_g[51]);
+
+// F[0]: LSB special case — simplifies to G[0] | Z[0]
+assign ff1_f[0]    = (ff1_t[1]  & (ff1_g[0] | ff1_z[0])) |
+                     (~ff1_t[1] & (ff1_z[0] | ff1_g[0]));
+
+// F[51:1]: general case (vectorized)
+assign ff1_f[51:1] = ( ff1_t[52:2] & ( (ff1_g[51:1] & ~ff1_z[50:0]) |
+                                        (ff1_z[51:1] & ~ff1_g[50:0]) )) |
+                     (~ff1_t[52:2] & ( (ff1_g[51:1] & ~ff1_g[50:0]) |
+                                        (ff1_z[51:1] & ~ff1_z[50:0]) ));
+```
+
+## Stage 3: Priority Encoding (this is where you optimize)
+
+Encode the MSB position of `ff1_f[52:0]` as a 6-bit binary index and a 53-bit one-hot.
+This is the **critical-path bottleneck** — the baseline uses a flat 51-case `casez` with
+O(53) gate delay. Replace it with a faster, lower-area implementation.
+
+**Encoding (MSB-first, position counted from bit 52 downward):**
+
+| ff1_f pattern                      | ff1_pred | ff1_pred_onehot                    |
+|------------------------------------|----------|------------------------------------|
+| `53'b1_????...` (bit 52 set)       | `6'd0`   | `53'b1_0000...0` (bit 52 set)     |
+| `53'b01_???...` (bit 51 is MSB 1)  | `6'd1`   | `53'b01_000...0` (bit 51 set)     |
+| `53'b001_??...` (bit 50 is MSB 1)  | `6'd2`   | `53'b001_00...0` (bit 50 set)     |
+| ...                                 | ...      | ...                                |
+| `53'b0...01` (only bit 0 set)      | `6'd52`  | `53'b0...01` (bit 0 set)          |
+
+Formula: `ff1_pred = 52 - (position of highest set bit in ff1_f)`.
+Equivalently: `ff1_pred_onehot = 53'd1 << (52 - ff1_pred)`.
+
+When `close_eq = 1` (A == B), all F bits are zero and `ff1_pred` / `ff1_pred_onehot`
+are don't-care — you may output any value for this case.
+
+**Baseline (correct but O(n) delay — do not copy this):**
+
+```verilog
+// Handles ff1_f[52:51] directly, then uses a 51-case casez for ff1_f[50:0].
+// The flat casez chain creates a ripple through 51 priority stages.
+```
+
+## Optimization Goals
+
+Minimize **ADP (Area × Delay Product)** after technology-mapped synthesis on sky130.
+
+Strategies (examples — you are not limited to these):
+
+1. **Hierarchical tree**: split ff1_f[52:0] into groups of ~8 bits; find the MSB within
+   each group using compact logic; select the highest-priority non-zero group; combine
+   group result with within-group position to form the final 6-bit index. Log₂ depth.
+
+2. **Parallel prefix**: use standard parallel-prefix techniques (Kogge-Stone, Brent-Kung)
+   adapted for priority encoding. Propagate "valid" flags upward to suppress lower groups.
+
+3. **Direct boolean minimization**: derive each bit of `ff1_pred[5:0]` independently as a
+   sum-of-products / Karnaugh-map minimized Boolean expression over ff1_f[52:0].
+
+4. **Bit-sliced approach**: compute each bit of the 6-bit binary output independently using
+   the structural regularity of the priority encoder (e.g., bit 5 = |ff1_f[52:32], etc.).
+
+For ff1_pred_onehot: derive it from ff1_pred as `53'd1 << (52 - ff1_pred[5:0])` or
+generate it in parallel with ff1_pred to avoid a separate decode stage.
+
+## Constraints
+
+- The module name MUST be `ct_fadd_close_s0_d`
+- All port names, widths, and directions MUST match exactly
+- Use Verilog-2001 or Verilog-2005 syntax compatible with `iverilog -g2005-sv`
+- Pure combinational logic — no clocks, no registers
+- Stages 1 and 2 (subtraction + FF1 pre-encoding) MUST be preserved verbatim
+- Stage 3 (priority encoding) output must be bit-exact vs the reference for all inputs
+  where `close_eq = 0`
+
+Output only Verilog code within ```verilog fences.

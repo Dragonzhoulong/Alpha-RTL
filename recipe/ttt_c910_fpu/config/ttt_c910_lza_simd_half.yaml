@@ -1,0 +1,157 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+data:
+  train_files: null
+  val_files: null
+  # LZA is much smaller than mult_compressor (~98-line reference, ~94-line
+  # prompt template, ~100-line solution). With shorter sequences we can afford
+  # a larger batch: 4 prompts x 8 rollouts = 32 samples/step on 1 node x 8 GPU.
+  train_batch_size: 4
+  val_batch_size: 4
+  gen_batch_size: ${data.train_batch_size}
+  dataloader_num_workers: 0
+  shuffle: false
+  validation_shuffle: false
+  # Prompt is ~4-5k tokens (reference.v ~1.5k + prompt_template ~2k + chat
+  # template overhead). 8192 provides ample headroom.
+  max_prompt_length: 8192
+  # Thinking disabled — 8192 tokens is sufficient for Verilog output (~2k)
+  # plus safety margin.
+  max_response_length: 8192
+  truncation: left
+  ttt_data_source: ttt/c910
+  custom_cls:
+    path: pkg://recipe.ttt_c910_fpu.dataset
+    name: TTTC910Dataset
+  sampler:
+    class_path: pkg://recipe.ttt_c910_fpu.sampler
+    class_name: TTTC910Sampler
+  ttt_c910:
+    problems_dir: recipe/ttt_c910_fpu/problems
+    problems: "lza_simd_half"
+    max_buffer_size: 500
+    topk_children: 2
+    puct_c: 1.0
+    lineage_blocking: true
+    seed: 42
+    seed_from_solutions: true
+    enable_thinking: false
+    # State-reuse ablation knob:
+    #   puct           : PUCT-scored parent selection (full method).
+    #   epsilon_greedy : with probability ε pick uniform random, else argmax-value.
+    #   none           : no reuse — every step re-samples from the initial seed states.
+    reuse_mode: puct
+    epsilon_greedy_eps: 0.1
+    state_pool_dir: ${trainer.default_local_dir}/ttt_c910_state_pool
+    state_pool_history_every: ${trainer.save_freq}
+    liberty_file: recipe/ttt_rtl/pdk/sky130_fd_sc_hd__tt_025C_1v80.lib
+    opensta_binary: sta
+    clk_period_ns: 10.0
+
+custom_reward_function:
+  path: recipe/ttt_c910_fpu/c910_reward.py
+  name: compute_score
+  reward_kwargs:
+    timeout_s: 30.0
+    # Pure combinational logic with ~1100 test vectors — runs much faster
+    # than the pipelined mult_compressor.
+    sim_timeout_s: 30.0
+    w_syntax: 0.1
+    w_func: 1.0
+    w_ppa: 10.0
+    ppa_baseline: 0
+    failure_reward: 0.0
+    liberty_file: recipe/ttt_rtl/pdk/sky130_fd_sc_hd__tt_025C_1v80.lib
+    opensta_binary: sta
+    opensta_timeout_s: 30.0
+    clk_period_ns: 10.0
+    problems_dir: recipe/ttt_c910_fpu/problems
+
+reward_model:
+  enable: false
+  launch_reward_fn_async: false
+
+algorithm:
+  adv_estimator: ttt_entropic_adaptive
+  use_kl_in_reward: false
+  use_kl_in_advantage: true
+  ttt_kl_penalty_coef: 0.1
+  custom_adv_estimator_use_critic: false
+  ttt_entropic_kl_budget: 0.6931471805599453   # ln(2); init/reset value
+  ttt_entropic_kl_budget_mode: fixed          # fixed | schedule | adaptive
+  ttt_entropic_kl_budget_start: 0.6931471805599453
+  ttt_entropic_kl_budget_end: 0.6931471805599453
+  ttt_entropic_kl_budget_schedule: cosine     # cosine | linear (schedule mode)
+  # Adaptive mode bounds and hyper-parameters (see ttt_c910_trainer.yaml for docs).
+  ttt_entropic_kl_budget_adaptive_min: 0.3466    # 0.5 * ln(2): keeps β solvable
+  ttt_entropic_kl_budget_adaptive_max: 2.7726
+  ttt_adaptive_ema_alpha: 0.3
+  ttt_adaptive_reward_ema_alpha: 0.1
+  ttt_adaptive_kl_brake_threshold: 0.4
+  ttt_adaptive_winner_beta_rate_hi: 0.6
+  # P2 eff_n joint gate (re-enabled — see ttt_c910_trainer.yaml for full
+  # rationale). At eff_n EMA above this, β saturation reflects flat rewards,
+  # not winner-take-all, so we hold δ instead of shrinking it.
+  ttt_adaptive_winner_eff_n_lo: 3.5
+  ttt_adaptive_warmup_steps: 20                  # hold δ at init for first N steps
+  ttt_adaptive_stagnation_steps: 15
+  ttt_adaptive_stagnation_min_improve: 0.02
+  ttt_adaptive_stagnation_const_guard: 0.7
+  ttt_adaptive_stagnation_eff_n_lo: 4.0          # only shrink δ when adv still sharp
+  ttt_adaptive_explore_eff_n_hi: 5.5
+  ttt_adaptive_explore_const_lo: 0.3
+  ttt_adaptive_plateau_guard: 5
+  ttt_adaptive_up_factor: 1.2
+  ttt_adaptive_down_factor: 0.85
+  ttt_entropic_beta_max: 1000000.0
+  ttt_entropic_beta_iters: 60
+  ttt_entropic_epsilon: 1e-12
+  ttt_remove_constant_reward_groups: true
+  ttt_constant_reward_tol: 1e-12
+
+actor_rollout_ref:
+  model:
+    use_remove_padding: true
+  actor:
+    use_kl_loss: false
+    entropy_coeff: 0.0
+    use_dynamic_bsz: true
+    ppo_mini_batch_size: ${data.train_batch_size}
+    # 8192 prompt + 8192 response = 16384, within 32k context window.
+    ppo_max_token_len_per_gpu: 16384
+    policy_loss:
+      loss_mode: gpg
+  rollout:
+    n: 8
+    temperature: 1.0
+    top_p: 1.0
+    # TP=1: shorter sequences fit on a single 80GB A800 GPU, giving us
+    # 8 rollout workers (vs 4 with TP=2) for faster throughput.
+    tensor_model_parallel_size: 1
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    # Qwen3-8B default context window (32768 tokens, no YaRN).
+    max_num_batched_tokens: 32768
+    max_model_len: 32768
+    gpu_memory_utilization: 0.45
+
+trainer:
+  project_name: verl-ttt-c910
+  experiment_name: lza_simd_half
+  logger: ["console", "swanlab"]
+  rollout_data_dir: ${trainer.default_local_dir}/rollout_samples
+  log_val_generations: 0
+  val_before_train: false
+  test_freq: -1
+  save_freq: 50
+  total_epochs: 100
+  total_training_steps: 100
+  critic_warmup: 0
+  # TP=1 means single-node training is sufficient for lza_simd_half.
+  nnodes: 1
+  n_gpus_per_node: 8

@@ -1,0 +1,130 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+data:
+  train_files: null
+  val_files: null
+  train_batch_size: 4
+  val_batch_size: 8
+  gen_batch_size: ${data.train_batch_size}
+  dataloader_num_workers: 0
+  shuffle: false
+  validation_shuffle: false
+  max_prompt_length: 4096
+  max_response_length: 6144
+  truncation: left
+  ttt_data_source: ttt/rtl
+  custom_cls:
+    path: pkg://recipe.ttt_rtl.dataset
+    name: TTTRTLDataset
+  sampler:
+    class_path: pkg://recipe.ttt_rtl.sampler
+    class_name: TTTRTLSampler
+  ttt_rtl:
+    rtllm_dir: RTLLM
+    problems: "multi_pipe_4bit"
+    max_buffer_size: 500
+    topk_children: 2
+    puct_c: 1.0
+    lineage_blocking: true
+    seed: 42
+    # Optional path to a JSON with pre-verified seed solutions to warm the state
+    # pool. Leave null to start from an empty root. Format: {"solutions": [{...}]}.
+    # See recipe/ttt_rtl/seeds/_validate_seeds.py for a generator example.
+    seed_solutions_file: null
+    state_pool_dir: ${trainer.default_local_dir}/ttt_rtl_state_pool
+    state_pool_history_every: ${trainer.save_freq}
+    liberty_file: recipe/ttt_rtl/pdk/Nangate45_typ.lib
+    # OpenSTA config for baseline computation — must match reward_kwargs values
+    # so baseline and online PPA metric use the same tool chain.
+    opensta_binary: sta
+    clk_period_ns: 10.0
+    # Fold OpenSTA activity-less power into the PPA metric: primary score = A*D*P.
+    # Must match reward_kwargs.include_power so baseline/online units agree.
+    include_power: true
+    # Paper-style power reporting: clock = delay × margin + fixed switching
+    # activity. Matches the "clock ≈ critical-path delay" sign-off convention
+    # used in RTL papers. Must mirror reward_kwargs values below.
+    power_activity: 0.20
+    power_duty: 0.5
+    power_clock_from_delay: true
+    power_clock_margin: 1.25
+
+custom_reward_function:
+  path: recipe/ttt_rtl/rtl_reward.py
+  name: compute_score
+  reward_kwargs:
+    timeout_s: 30.0
+    w_syntax: 0.1
+    w_func: 1.0
+    w_ppa: 10.0
+    ppa_baseline: 0
+    failure_reward: 0.0
+    liberty_file: recipe/ttt_rtl/pdk/Nangate45_typ.lib
+    # OpenSTA for accurate STA (replaces ABC stime). Set to null to disable.
+    opensta_binary: sta
+    opensta_timeout_s: 30.0
+    # Target clock period for sequential designs (10ns = 100 MHz)
+    clk_period_ns: 10.0
+    # Fold OpenSTA activity-less power into PPA: ppa_score = area*delay*power_w.
+    include_power: true
+    # Paper-style power reporting (mirror data.ttt_rtl values above).
+    power_activity: 0.20
+    power_duty: 0.5
+    power_clock_from_delay: true
+    power_clock_margin: 1.25
+
+reward_model:
+  enable: false
+  launch_reward_fn_async: false
+
+algorithm:
+  adv_estimator: ttt_entropic_adaptive
+  use_kl_in_reward: false
+  use_kl_in_advantage: true
+  ttt_kl_penalty_coef: 0.1
+  custom_adv_estimator_use_critic: false
+  ttt_entropic_kl_budget: 0.6931471805599453
+  ttt_entropic_beta_max: 1000000.0
+  ttt_entropic_beta_iters: 60
+  ttt_entropic_epsilon: 1e-12
+  ttt_remove_constant_reward_groups: true
+  ttt_constant_reward_tol: 1e-12
+
+actor_rollout_ref:
+  actor:
+    use_kl_loss: false
+    entropy_coeff: 0.0
+    use_dynamic_bsz: true
+    ppo_mini_batch_size: ${data.train_batch_size}
+    ppo_max_token_len_per_gpu: 12288
+    policy_loss:
+      loss_mode: gpg
+  rollout:
+    n: 8
+    temperature: 1.0
+    top_p: 1.0
+    tensor_model_parallel_size: 1
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    max_num_batched_tokens: 16384
+    gpu_memory_utilization: 0.4
+
+trainer:
+  project_name: verl-ttt-rtl
+  experiment_name: multi_pipe_4bit
+  logger: ["console", "swanlab"]
+  rollout_data_dir: ${trainer.default_local_dir}/rollout_samples
+  log_val_generations: 0
+  val_before_train: false
+  test_freq: -1
+  save_freq: 50
+  total_epochs: 100
+  total_training_steps: 100
+  critic_warmup: 0
+  nnodes: 1
+  n_gpus_per_node: 8

@@ -1,0 +1,24 @@
+{
+  "problem": "lza_simd_half",
+  "liberty": "Nangate45_typ.lib",
+  "seed": 42,
+  "model": "Qwen3-8B",
+  "steps": 100,
+  "rollouts_per_step": 32,
+  "reference": {
+    "area_um2": 315.21,
+    "delay_ps": 496.3,
+    "adp": 156438.723
+  },
+  "discovered": {
+    "area_um2": 234.08,
+    "delay_ps": 374.09999999999997,
+    "adp": 87569.328,
+    "found_at_step": 83
+  },
+  "adp_reduction": 0.440232403328938,
+  "checks": {
+    "simulation": true,
+    "formal_equivalence": true
+  }
+}

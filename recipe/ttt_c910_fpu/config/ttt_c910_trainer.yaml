@@ -1,0 +1,201 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+data:
+  train_files: null
+  val_files: null
+  # 4 prompts × 8 rollouts = 32 samples/step on 2 nodes × 8 GPUs (16 A800-80G).
+  # Larger batch improves per-step exploration and advantage estimation.
+  train_batch_size: 2
+  val_batch_size: 4
+  gen_batch_size: ${data.train_batch_size}
+  dataloader_num_workers: 0
+  shuffle: false
+  validation_shuffle: false
+  # Full initial prompt is ~16k tokens for mult_compressor (reference.v +
+  # prompt_template). Keep slack so chat template and prompt growth still fit.
+  max_prompt_length: 24576
+  # With YaRN-extended context (65,536), we have room for ~5k thinking tokens
+  # plus ~16k code tokens. Solutions range from 14,280 to 15,615 tokens.
+  max_response_length: 24576
+  truncation: left
+  ttt_data_source: ttt/c910
+  custom_cls:
+    path: pkg://recipe.ttt_c910_fpu.dataset
+    name: TTTC910Dataset
+  sampler:
+    class_path: pkg://recipe.ttt_c910_fpu.sampler
+    class_name: TTTC910Sampler
+  ttt_c910:
+    problems_dir: recipe/ttt_c910_fpu/problems
+    problems: "mult_compressor"
+    max_buffer_size: 500
+    topk_children: 2
+    puct_c: 1.0
+    lineage_blocking: true
+    seed: 42
+    # Seed the PUCT pool with verified solutions on first run (skipped on restore).
+    # Solutions are loaded from {problems_dir}/{problem_id}/solutions/.
+    seed_from_solutions: true
+    state_pool_dir: ${trainer.default_local_dir}/ttt_c910_state_pool
+    state_pool_history_every: ${trainer.save_freq}
+    liberty_file: recipe/ttt_rtl/pdk/sky130_fd_sc_hd__tt_025C_1v80.lib
+    opensta_binary: sta
+    clk_period_ns: 10.0
+
+custom_reward_function:
+  path: recipe/ttt_c910_fpu/c910_reward.py
+  name: compute_score
+  reward_kwargs:
+    timeout_s: 30.0
+    sim_timeout_s: 120.0
+    w_syntax: 0.1
+    w_func: 1.0
+    w_ppa: 10.0
+    ppa_baseline: 0
+    failure_reward: 0.0
+    liberty_file: recipe/ttt_rtl/pdk/sky130_fd_sc_hd__tt_025C_1v80.lib
+    opensta_binary: sta
+    opensta_timeout_s: 30.0
+    clk_period_ns: 10.0
+    problems_dir: recipe/ttt_c910_fpu/problems
+
+reward_model:
+  enable: false
+  launch_reward_fn_async: false
+
+algorithm:
+  adv_estimator: ttt_entropic_adaptive
+  use_kl_in_reward: false
+  use_kl_in_advantage: true
+  ttt_kl_penalty_coef: 0.1
+  custom_adv_estimator_use_critic: false
+  # δ = KL budget for the entropic-adaptive advantage.
+  # Higher δ → higher β → more concentrated advantages (exploitative).
+  # Lower δ  → lower  β → more uniform advantages   (explorative).
+  ttt_entropic_kl_budget: 0.6931471805599453   # ln(2); init/reset value
+  # --- δ schedule mode ---
+  # fixed    : constant ttt_entropic_kl_budget (legacy).
+  # schedule : cosine/linear interpolation from _start to _end over training.
+  # adaptive : metric-driven controller (recommended). δ is updated each step
+  #            via a priority ladder based on EMA signals:
+  #              P1 KL brake     (ref-KL spike)   → reset to init
+  #              P2 Winner-take-all (β saturated) → decrease δ
+  #              P3 Stagnation   (no improvement) → decrease δ
+  #              P4 Over-exploring (eff-n too high) → increase δ
+  #              P0 Healthy      → hold
+  ttt_entropic_kl_budget_mode: fixed          # fixed | schedule | adaptive
+  ttt_entropic_kl_budget_start: 0.6931471805599453
+  ttt_entropic_kl_budget_end: 0.6931471805599453
+  ttt_entropic_kl_budget_schedule: cosine     # cosine | linear (schedule mode)
+  # Adaptive mode bounds and hyper-parameters.
+  # MIN raised from 0.25·ln2 (=0.173) to 0.5·ln2 (=0.347): below ~0.3 the
+  # entropic solver lands β so small that advantages collapse toward a uniform
+  # group baseline (eff_n→k, |adv|→0) and the gradient signal is ~10× weaker
+  # than at δ=ln(2). Empirically the previous floor of 0.173 was the
+  # difference between adaptive matching fixed and lagging it.
+  ttt_entropic_kl_budget_adaptive_min: 0.3466  # 0.5 * ln(2)
+  ttt_entropic_kl_budget_adaptive_max: 2.7726  # 4.0  * ln(2)
+  ttt_adaptive_ema_alpha: 0.3                  # EMA weight on new observation
+  ttt_adaptive_reward_ema_alpha: 0.1           # slower EMA for reward trend
+  # Warm-up: hold δ at init for the first N steps. Without this, P3 can fire
+  # on noisy early signals (~step 25) and chain δ down to MIN before the
+  # policy has produced any meaningful gradient.
+  ttt_adaptive_warmup_steps: 20
+  # P1 — KL brake (active during warm-up too: it's an emergency stop)
+  ttt_adaptive_kl_brake_threshold: 0.4        # ref-KL EMA above this → reset
+  # P2 — winner-take-all. Requires BOTH: β-max-hit-rate EMA above
+  # `winner_beta_rate_hi` AND eff-n EMA below `winner_eff_n_lo`. The eff_n
+  # joint gate was previously marked deprecated, but lza_simd_half v8/v9
+  # showed β saturating at high eff_n (~5) when rewards became nearly
+  # uniform within groups — the entropic solver pushes β to the cap trying
+  # to match δ=ln 2 against a flat reward landscape. That is NOT
+  # winner-take-all; lowering δ in this regime crushes adv.max from ~3 to
+  # ~0.5 and stalls learning. With both gates required, P2 only fires when
+  # group weights are genuinely concentrated on 1-2 samples (eff_n ≈ 1-3).
+  ttt_adaptive_winner_beta_rate_hi: 0.6       # β-max-hit-rate EMA threshold
+  ttt_adaptive_winner_eff_n_lo: 3.5           # eff-n EMA upper bound for P2
+  # P3 — stagnation. Detected over a ROLLING WINDOW of the last
+  # ``stagnation_steps`` batch-max values (not all-time best, which used to
+  # get poisoned permanently by a single lucky early batch). Also gated by
+  # ``stagnation_eff_n_lo``: only spread the advantage when it is still
+  # sharp; otherwise lowering δ flattens the gradient and stalls learning.
+  ttt_adaptive_stagnation_steps: 15           # rolling window length
+  ttt_adaptive_stagnation_min_improve: 0.02   # minimum absolute improvement
+                                              # (scaled by max(|prior_best|, 1))
+  ttt_adaptive_stagnation_const_guard: 0.7    # only fire if const_frac < this
+  ttt_adaptive_stagnation_eff_n_lo: 4.0       # only fire if eff_n EMA < this
+                                              # (advantages still winner-skewed)
+  # P4 — over-exploring
+  ttt_adaptive_explore_eff_n_hi: 5.5          # eff-n EMA above this → sharpen
+  ttt_adaptive_explore_const_lo: 0.3          # only fire if const_frac < this
+  ttt_adaptive_plateau_guard: 5               # only fire if steps_no_improve < this
+                                              # (disables P4 in late-stage plateaus
+                                              # where const_frac→0 would otherwise
+                                              # wrongly signal "over-exploring")
+  # Step sizes (multiplicative)
+  ttt_adaptive_up_factor: 1.2
+  ttt_adaptive_down_factor: 0.85
+  ttt_entropic_beta_max: 1000000.0
+  ttt_entropic_beta_iters: 60
+  ttt_entropic_epsilon: 1e-12
+  ttt_remove_constant_reward_groups: true
+  ttt_constant_reward_tol: 1e-12
+
+actor_rollout_ref:
+  model:
+    # Skip padding tokens in actor/ref forward passes to reduce activation and
+    # log-prob memory for long-context training.
+    use_remove_padding: true
+  actor:
+    use_kl_loss: false
+    entropy_coeff: 0.0
+    use_dynamic_bsz: true
+    ppo_mini_batch_size: ${data.train_batch_size}
+    # 24,576 prompt + 24,576 response = 49,152, within the YaRN-extended
+    # 65,536 context window.
+    ppo_max_token_len_per_gpu: 49152
+    # Critical for long responses: chunk entropy over the vocab dimension so
+    # peak memory stays roughly constant instead of scaling with response length.
+    entropy_from_logits_with_chunking: true
+    # Trades compute for memory during backward through the entropy path.
+    entropy_checkpointing: true
+    policy_loss:
+      loss_mode: gpg
+  rollout:
+    # 4 prompts × 8 samples = 32 total rollouts per step.
+    n: 8
+    temperature: 1.0
+    top_p: 1.0
+    # Split the vLLM model across 2 GPUs so long-context rollout (40k tokens)
+    # leaves headroom for KV cache on 80 GB A800 cards. With TP=2 and 16 GPUs,
+    # there are 8 rollout workers to handle 32 rollouts per step.
+    tensor_model_parallel_size: 2
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    # Must be >= max_model_len when enable_chunked_prefill is true (default).
+    max_num_batched_tokens: 65536
+    # YaRN-extended context window (65,536 tokens).
+    max_model_len: 65536
+    # Slightly raised from 0.4 to accommodate the larger KV cache from the
+    # YaRN-extended 65k context window (+1.7 GB/GPU).
+    gpu_memory_utilization: 0.45
+
+trainer:
+  project_name: verl-ttt-c910
+  experiment_name: mult_compressor
+  logger: ["console", "swanlab"]
+  rollout_data_dir: ${trainer.default_local_dir}/rollout_samples
+  log_val_generations: 0
+  val_before_train: false
+  test_freq: -1
+  save_freq: 50
+  total_epochs: 100
+  total_training_steps: 200
+  critic_warmup: 0
+  nnodes: 2
+  n_gpus_per_node: 8

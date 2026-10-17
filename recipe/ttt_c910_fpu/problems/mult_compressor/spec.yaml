@@ -1,0 +1,61 @@
+problem_id: mult_compressor
+design_name: ct_vfmau_mult_compressor
+
+description: |
+  Floating-point multiplier compressor tree from the OpenC910 RISC-V CPU's
+  Vector Floating-point Multiply-Accumulate Unit (VFMAU).
+
+  This module takes two 52-bit fractional operands (op0_frac, op1_frac) with
+  hidden bits, generates 27 partial products via Booth radix-4 encoding, and
+  reduces them through a multi-level compressor tree to produce a final
+  carry-save result: sum[105:0] + carry[105:0].
+
+  The module supports three precision modes (double/single/half) controlled by
+  dp_xx_ex1_double, dp_xx_ex1_single, dp_xx_ex1_half. It also produces a
+  SIMD half-precision product (simd_half0_product[21:0]).
+
+  Architecture:
+    - Booth radix-4 encoding: 27 booth_code_v1 instances
+    - L1 compressors (EX1): 6x 4:2 + 1x 3:2 + 1x 4:2 (SIMD half)
+    - L2 compressors (EX1): 4x 3:2 + 2x 4:2
+    - L3 compressors (EX1): 2x 4:2
+    - Pipeline register: EX1 -> EX2 boundary (gated clock)
+    - L4 compressors (EX2): 2x 3:2
+    - L5 compressor  (EX2): 1x 4:2 -> final sum + carry
+
+  Constraints:
+    - Module interface (ports, widths, directions) must be EXACTLY preserved.
+    - Pipeline register between EX1 and EX2 must be preserved (gated clock
+      using cp0_vfpu_icg_en, cp0_yy_clk_en, pad_yy_icg_scan_en, pipe_down).
+      Internal register names and widths may differ from the reference.
+    - Functional correctness: for all input combinations,
+      sum[105:0] + carry[105:0] must equal the reference implementation's
+      sum + carry (mathematical equivalence, not bit-exact on individual
+      sum/carry). simd_half0_product[21:0] must be identical to the reference.
+
+ports:
+  inputs:
+    - {name: cp0_vfpu_icg_en, width: 1}
+    - {name: cp0_yy_clk_en, width: 1}
+    - {name: dp_xx_ex1_double, width: 1}
+    - {name: dp_xx_ex1_half, width: 1}
+    - {name: dp_xx_ex1_single, width: 1}
+    - {name: forever_cpuclk, width: 1}
+    - {name: mult1_ex1_op0_half0_hidden_bit, width: 1}
+    - {name: mult1_ex1_op0_hidden_bit, width: 1}
+    - {name: mult1_ex1_op1_half0_hidden_bit, width: 1}
+    - {name: mult1_ex1_op1_hidden_bit, width: 1}
+    - {name: op0_frac, width: 52}
+    - {name: op1_frac, width: 52}
+    - {name: pad_yy_icg_scan_en, width: 1}
+    - {name: pipe_down, width: 1}
+  outputs:
+    - {name: carry, width: 106}
+    - {name: simd_half0_product, width: 22}
+    - {name: sum, width: 106}
+
+deps:
+  - deps/compressor_32.v
+  - deps/compressor_42.v
+  - deps/booth_code_v1.v
+  - deps/gated_clk_cell.v

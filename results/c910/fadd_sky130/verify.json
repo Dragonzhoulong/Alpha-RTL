@@ -1,0 +1,24 @@
+{
+  "problem": "fadd_close_s0_d",
+  "liberty": "sky130_fd_sc_hd__tt_025C_1v80.lib",
+  "seed": 42,
+  "model": "Qwen3-8B",
+  "steps": 100,
+  "rollouts_per_step": 32,
+  "reference": {
+    "area_um2": 6487.472,
+    "delay_ps": 3486.2000000000003,
+    "adp": 22616624.8864
+  },
+  "discovered": {
+    "area_um2": 5696.7136,
+    "delay_ps": 3466.0,
+    "adp": 19744809.3376,
+    "found_at_step": 34
+  },
+  "adp_reduction": 0.12697807755245127,
+  "checks": {
+    "simulation": true,
+    "formal_equivalence": true
+  }
+}

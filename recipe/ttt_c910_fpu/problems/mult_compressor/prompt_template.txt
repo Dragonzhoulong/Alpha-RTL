@@ -1,0 +1,104 @@
+You are an expert digital circuit designer specializing in high-performance arithmetic units.
+
+## Task
+
+Implement a Verilog module `ct_vfmau_mult_compressor` — a Booth radix-4 multiplier compressor tree for the floating-point multiply-accumulate unit (VFMAU) of an out-of-order RISC-V CPU.
+
+## Module Interface (MUST match exactly)
+
+```verilog
+module ct_vfmau_mult_compressor(
+  carry,                            // output [105:0]
+  cp0_vfpu_icg_en,                  // input
+  cp0_yy_clk_en,                    // input
+  dp_xx_ex1_double,                 // input — double precision mode
+  dp_xx_ex1_half,                   // input — half precision mode
+  dp_xx_ex1_single,                 // input — single precision mode
+  forever_cpuclk,                   // input — clock
+  mult1_ex1_op0_half0_hidden_bit,   // input — op0 half hidden bit
+  mult1_ex1_op0_hidden_bit,         // input — op0 hidden bit (1=normal, 0=denormal)
+  mult1_ex1_op1_half0_hidden_bit,   // input — op1 half hidden bit
+  mult1_ex1_op1_hidden_bit,         // input — op1 hidden bit
+  op0_frac,                         // input  [51:0] — operand 0 fraction
+  op1_frac,                         // input  [51:0] — operand 1 fraction
+  pad_yy_icg_scan_en,               // input
+  pipe_down,                        // input — pipeline enable
+  simd_half0_product,               // output [21:0] — SIMD half result
+  sum                               // output [105:0]
+);
+```
+
+## Functional Specification
+
+1. **Operand preparation**: Form 54-bit multiplicand/multiplier as {2'b0, op0_frac[51:0]} and {2'b0, op1_frac[51:0]}.
+
+2. **Booth radix-4 encoding**: Generate 27 partial products from the multiplier using Booth radix-4 encoding. Each 3-bit slice of the multiplier selects one of: 0, +A, +2A, -2A, -A (where A = multiplicand[52:0]).
+
+3. **Multi-precision support**:
+   - **Double** (dp_xx_ex1_double=1): Full 54×54 multiplication, all 52 mantissa bits active
+   - **Single** (dp_xx_ex1_single=1): Lower 23 bits of fraction active
+   - **Half** (dp_xx_ex1_half=1): Lower 10 bits of fraction active
+   Only one mode is active at a time. Partial products are masked/gated per mode.
+
+4. **Denormal handling**: When hidden bit = 0, the corresponding partial product is zeroed out. `oper_norm = op0_hidden & op1_hidden`.
+
+5. **Compressor tree reduction**: Reduce 27 partial products + sign correction bits to carry-save form (sum + carry) using 4:2 and 3:2 compressor cells.
+
+6. **Pipeline register**: There MUST be a pipeline register (EX1→EX2 boundary) that latches intermediate results on `posedge forever_cpuclk` when `pipe_down=1`. The gated clock cell uses `cp0_vfpu_icg_en`, `cp0_yy_clk_en`, `pad_yy_icg_scan_en` for clock gating.
+
+7. **SIMD half product**: `simd_half0_product[21:0]` is computed from the half-precision partial products (combinational, no pipeline delay).
+
+8. **Output**: `sum[105:0]` and `carry[105:0]` are the final carry-save redundant form of the multiplication result (computed in EX2, combinational from pipeline registers).
+
+## Available Building Blocks
+
+You may use these pre-existing modules:
+
+```verilog
+// 4:2 compressor (parametric width)
+module compressor_42(p0, p1, p2, p3, cin, s, ca, cout);
+  parameter B_SIZE = 8;
+  // cin is the carry chain from adjacent compressor
+  // cout feeds the adjacent compressor's cin
+  // s = sum, ca = carry-save output
+```
+
+```verilog
+// 3:2 compressor (full adder array, parametric width)
+module compressor_32(a, b, c, s, ca);
+  parameter B_SIZE = 8;
+```
+
+```verilog
+// Booth radix-4 encoder
+module booth_code_v1(A, code, product, h, sn);
+  parameter B_SIZE = 53;
+  // A = multiplicand[B_SIZE-1:0]
+  // code = 3-bit multiplier slice
+  // product = partial product[B_SIZE:0]
+  // h = correction bits[1:0]
+  // sn = sign_not (for Baugh-Wooley sign extension)
+```
+
+```verilog
+// Gated clock cell
+module gated_clk_cell(clk_in, global_en, module_en, local_en, external_en, pad_yy_icg_scan_en, clk_out);
+```
+
+## Optimization Goals
+
+Minimize **ADP (Area × Delay Product)** after technology-mapped synthesis with sky130 standard cells. Strategies include:
+- Optimizing the compressor tree topology (different groupings, reduction stages)
+- Reducing unnecessary bit-width in intermediate signals
+- More efficient sign extension handling
+- Better partial product alignment to minimize compressor input widths
+- Balancing logic depth across the tree
+
+## Constraints
+
+- The module name MUST be `ct_vfmau_mult_compressor`
+- All port names, widths, and directions MUST match exactly
+- Functional correctness: `sum[105:0] + carry[105:0]` must be mathematically equal to the reference for ALL input combinations. The individual sum and carry bit patterns do NOT need to match — only their sum must be identical. `simd_half0_product[21:0]` must be bit-exact.
+- Pipeline register between EX1 and EX2 must be preserved (gated clock). Internal register names, widths, and the amount of logic in EX1 vs EX2 may differ from the reference.
+
+Output only Verilog code within ```verilog fences.

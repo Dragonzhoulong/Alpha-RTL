@@ -1,0 +1,67 @@
+problem_id: fadd_close_s0_d
+design_name: ct_fadd_close_s0_d
+
+description: |
+  Double-precision floating-point adder "close path" stage 0
+  (ct_fadd_close_s0_d) from the OpenC910 RISC-V CPU's Vector Floating-point
+  ALU (VFALU).
+
+  This module is used in the FP adder's subtraction path when the two
+  operand exponents differ by at most 1 (the "close" or "near" path). It
+  performs three tasks:
+    1. Compute both A−B and B−A difference candidates simultaneously
+       (close_sum_a_b / close_sum_b_a). The caller selects the non-negative
+       one based on close_op_chg.
+    2. Determine which difference would borrow (close_op_chg = 1 when B > A)
+       and whether the operands are equal (close_eq).
+    3. Predict the leading-zero position in the subtraction result using an
+       LZA-style FF1 (Find-First-1) circuit on carry-propagation signals,
+       producing ff1_pred[5:0] (6-bit binary index) and ff1_pred_onehot[52:0]
+       (one-hot at the same position). This prediction avoids waiting for the
+       full subtraction to complete before starting normalization.
+
+  Algorithm:
+    Stage 1 — Subtraction:
+      close_sum0[53:0] = {1'b0, close_adder0} - {1'b0, close_adder1}
+      close_sum1[53:0] = {1'b0, close_adder1} - {1'b0, close_adder0}
+      close_sum_a_b    = close_sum0[52:0]
+      close_sum_b_a    = close_sum1[52:0]
+      close_op_chg     = close_sum0[53]   (borrow: B > A)
+      close_eq         = !close_sum0[53] && !close_sum1[53]  (A == B)
+
+    Stage 2 — FF1 pre-encoding (LZA carry signal derivation):
+      c = ~close_adder1
+      T = close_adder0 ^ c           (bits that propagate a carry)
+      G = close_adder0 & c           (bits that generate a carry)
+      Z = ~close_adder0 & ~c         (bits that delete a carry)
+      F[52]    = G[52]&~Z[51] | Z[52]&~G[51]
+      F[0]     = G[0] | Z[0]
+      F[51:1]  = (T[52:2] & (G[51:1]&~Z[50:0] | Z[51:1]&~G[50:0]))
+               | (~T[52:2] & (G[51:1]&~G[50:0] | Z[51:1]&~Z[50:0]))
+
+    Stage 3 — Priority encoding (optimization target):
+      Find the MSB position of F[52:0] and encode as:
+        ff1_pred[5:0]         binary index (0 = F[52] set, 52 = F[0] set)
+        ff1_pred_onehot[52:0] one-hot at the same position
+      When close_eq = 1 (A == B, all F bits zero), ff1_pred is don't-care.
+
+  Constraints:
+    - Module interface (ports, widths, directions) must be EXACTLY preserved.
+    - Pure combinational logic — no clock, no pipeline registers.
+    - Functional correctness: for all input combinations, all six outputs must
+      match the reference for all cases where close_eq = 0 (unequal inputs).
+      When close_eq = 1, ff1_pred and ff1_pred_onehot are don't-care.
+
+ports:
+  inputs:
+    - {name: close_adder0, width: 53}
+    - {name: close_adder1, width: 53}
+  outputs:
+    - {name: close_eq,         width: 1}
+    - {name: close_op_chg,     width: 1}
+    - {name: close_sum_a_b,    width: 53}
+    - {name: close_sum_b_a,    width: 53}
+    - {name: ff1_pred,         width: 6}
+    - {name: ff1_pred_onehot,  width: 53}
+
+deps: []
